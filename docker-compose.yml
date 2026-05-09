@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  flacapi:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data                    # persistent storage for downloads
+      - ./extensions:/app/extensions:ro  # keep extensions synced in read-only mode
+    environment:
+      - FLACAPI_DATA_DIR=/data
+      - FLACAPI_EXTENSIONS_DIR=/app/extensions
+    restart: unless-stopped

@@ -1,0 +1,25 @@
+# Binaries and executables
+flacapi
+flacapi.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Local data and cache
+data/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+Thumbs.db
