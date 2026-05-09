@@ -61,7 +61,7 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		RequestJSON string `json:"requestJSON"`
 	}
 	var reqStr string
-	if err := json.Unmarshal(bodyBytes, &req); err == nil && req.RequestJSON != "" {
+	if unmarshalErr := json.Unmarshal(bodyBytes, &req); unmarshalErr == nil && req.RequestJSON != "" {
 		reqStr = req.RequestJSON
 	} else {
 		reqStr = string(bodyBytes)
@@ -74,21 +74,21 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleGetDownloadProgress retrieves single progress.
 func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 	result := gb.GetDownloadProgress()
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleGetAllDownloadProgress retrieves all active progress.
 func HandleGetAllDownloadProgress(w http.ResponseWriter, r *http.Request) {
 	result := gb.GetAllDownloadProgress()
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleGetAllDownloadProgressDelta retrieves delta updates since a sequence number.
@@ -96,11 +96,11 @@ func HandleGetAllDownloadProgressDelta(w http.ResponseWriter, r *http.Request) {
 	sinceStr := r.URL.Query().Get("since")
 	var sinceSeq int64
 	if sinceStr != "" {
-		fmt.Sscanf(sinceStr, "%d", &sinceSeq)
+		_, _ = fmt.Sscanf(sinceStr, "%d", &sinceSeq)
 	}
 	result := gb.GetAllDownloadProgressDelta(sinceSeq)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleInitItemProgress initializes progress tracking for a given item.
@@ -114,7 +114,7 @@ func HandleInitItemProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	gb.InitItemProgress(req.ItemID)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
 // HandleFinishItemProgress marks item progress as completed.
@@ -128,7 +128,7 @@ func HandleFinishItemProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	gb.FinishItemProgress(req.ItemID)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
 // HandleClearItemProgress removes progress details for a finished item.
@@ -142,7 +142,7 @@ func HandleClearItemProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	gb.ClearItemProgress(req.ItemID)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
 // HandleCancelDownload cancels an ongoing download.
@@ -156,7 +156,7 @@ func HandleCancelDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	gb.CancelDownload(req.ItemID)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
 // HandleReadMetadata reads and returns metadata of a file.
@@ -179,7 +179,7 @@ func HandleReadMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleEditMetadata updates metadata of a file.
@@ -203,7 +203,7 @@ func HandleEditMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleDownloadCover downloads cover art into a safe local file.
@@ -228,7 +228,7 @@ func HandleDownloadCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
 // HandleGetLyrics retrieves lyrics for a track.
@@ -259,7 +259,7 @@ func HandleGetLyrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleEmbedLyrics embeds lyrics directly to a music file.
@@ -283,7 +283,7 @@ func HandleEmbedLyrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
+	_, _ = w.Write([]byte(result))
 }
 
 // HandleSetDownloadDir configures the default download directory safely.
@@ -307,5 +307,5 @@ func HandleSetDownloadDir(w http.ResponseWriter, r *http.Request) {
 	}
 	gb.AllowDownloadDir(safePath)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true}`))
+	_, _ = w.Write([]byte(`{"success":true}`))
 }

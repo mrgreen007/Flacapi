@@ -24,7 +24,6 @@ linters-settings:
     rules:
       - name: blank-imports
       - name: context-as-argument
-      - name: context-keys-as-struct-field
       - name: dot-imports
       - name: error-return
       - name: error-strings
