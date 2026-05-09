@@ -93,11 +93,33 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	if json.Unmarshal([]byte(result), &respMap) == nil {
 		success, _ := respMap["success"].(bool)
 		filePath, _ := respMap["file_path"].(string)
+		coverURL, _ := respMap["cover_url"].(string)
 		if success && filePath != "" && strings.HasSuffix(strings.ToLower(filePath), ".m4a") {
 			targetFlacPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".flac"
 			cmd := exec.Command("ffmpeg", "-i", filePath, "-c:a", "flac", "-y", targetFlacPath)
 			if transcodeErr := cmd.Run(); transcodeErr == nil {
 				_ = os.Remove(filePath)
+
+				// Programmatically download and natively embed the cover art as an attached picture in the FLAC metadata
+				if coverURL != "" {
+					if httpResp, httpErr := http.Get(coverURL); httpErr == nil && httpResp.StatusCode == http.StatusOK {
+						tempCoverPath := targetFlacPath + ".cover.jpg"
+						if coverFile, createErr := os.Create(tempCoverPath); createErr == nil {
+							_, _ = io.Copy(coverFile, httpResp.Body)
+							_ = coverFile.Close()
+							_ = httpResp.Body.Close()
+
+							tempFlacPath := targetFlacPath + ".temp.flac"
+							embedCmd := exec.Command("ffmpeg", "-i", targetFlacPath, "-i", tempCoverPath, "-map", "0:a", "-map", "1:v", "-c:a", "copy", "-c:v", "copy", "-disposition:v", "attached_pic", "-y", tempFlacPath)
+							if embedErr := embedCmd.Run(); embedErr == nil {
+								_ = os.Remove(targetFlacPath)
+								_ = os.Rename(tempFlacPath, targetFlacPath)
+							}
+							_ = os.Remove(tempCoverPath)
+						}
+					}
+				}
+
 				respMap["file_path"] = targetFlacPath
 				respMap["requires_container_conversion"] = false
 				respMap["actual_extension"] = ".flac"
