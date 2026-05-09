@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -84,6 +86,27 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
+	}
+
+	// Auto-convert to .flac if the backend returned an .m4a ALAC container
+	var respMap map[string]interface{}
+	if json.Unmarshal([]byte(result), &respMap) == nil {
+		success, _ := respMap["success"].(bool)
+		filePath, _ := respMap["file_path"].(string)
+		if success && filePath != "" && strings.HasSuffix(strings.ToLower(filePath), ".m4a") {
+			targetFlacPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".flac"
+			cmd := exec.Command("ffmpeg", "-i", filePath, "-c:a", "flac", "-y", targetFlacPath)
+			if transcodeErr := cmd.Run(); transcodeErr == nil {
+				_ = os.Remove(filePath)
+				respMap["file_path"] = targetFlacPath
+				respMap["requires_container_conversion"] = false
+				respMap["actual_extension"] = ".flac"
+				respMap["actual_container"] = "FLAC"
+				if updatedResultBytes, marshalErr := json.Marshal(respMap); marshalErr == nil {
+					result = string(updatedResultBytes)
+				}
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
