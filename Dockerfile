@@ -7,6 +7,7 @@ RUN apk add --no-cache git build-base
 
 # Copy go module files and download dependencies
 COPY go.mod go.sum ./
+COPY internal/go_backend ./internal/go_backend
 RUN go mod download
 
 # Copy source files
