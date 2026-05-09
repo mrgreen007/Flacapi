@@ -94,7 +94,7 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		success, _ := respMap["success"].(bool)
 		filePath, _ := respMap["file_path"].(string)
 		coverURL, _ := respMap["cover_url"].(string)
-		if success && filePath != "" && !strings.HasSuffix(strings.ToLower(filePath), ".flac") {
+		if success && filePath != "" && strings.HasSuffix(strings.ToLower(filePath), ".m4a") {
 			targetFlacPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".flac"
 			cmd := exec.Command("ffmpeg", "-i", filePath, "-c:a", "flac", "-y", targetFlacPath)
 			if transcodeErr := cmd.Run(); transcodeErr == nil {
