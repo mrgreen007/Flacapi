@@ -67,6 +67,19 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		reqStr = string(bodyBytes)
 	}
 
+	// Resolve relative output_dir to absolute path to guarantee consistent folder output across all JS extensions
+	var reqMap map[string]interface{}
+	if mapUnmarshalErr := json.Unmarshal([]byte(reqStr), &reqMap); mapUnmarshalErr == nil {
+		if outDir, ok := reqMap["output_dir"].(string); ok && outDir != "" {
+			if absOutDir, absPathErr := filepath.Abs(outDir); absPathErr == nil {
+				reqMap["output_dir"] = absOutDir
+				if updatedBytes, marshalErr := json.Marshal(reqMap); marshalErr == nil {
+					reqStr = string(updatedBytes)
+				}
+			}
+		}
+	}
+
 	result, err := gb.DownloadByStrategy(reqStr)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)

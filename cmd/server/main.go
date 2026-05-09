@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -45,6 +47,24 @@ func main() {
 		log.Fatalf("Failed to create extensions directory %s: %v", absExtDir, err)
 	}
 
+	// Determine active source extensions directory
+	srcExtDir := absExtDir
+	if _, err := os.Stat(filepath.Join(absExtDir, "extensions")); err == nil {
+		srcExtDir = filepath.Join(absExtDir, "extensions")
+	}
+
+	// Point run-time extensions to git-ignored data subdirectory to prevent dirtying submodules
+	runExtDir := filepath.Join(absDataDir, "extensions_run")
+	_ = os.RemoveAll(runExtDir)
+	if err := os.MkdirAll(runExtDir, 0755); err != nil {
+		log.Fatalf("Failed to create run-time extensions directory %s: %v", runExtDir, err)
+	}
+
+	// Copy .spotiflac-ext packages to the run-time directory
+	if err := copyExtensions(srcExtDir, runExtDir); err != nil {
+		log.Printf("Warning: Failed to copy extension packages from %s to %s: %v", srcExtDir, runExtDir, err)
+	}
+
 	// Configure handler base directory
 	api.DataDir = absDataDir
 
@@ -54,16 +74,23 @@ func main() {
 	}
 	go_backend.AllowDownloadDir(absDataDir)
 
-	// Bootstrap extension system
-	if err := go_backend.InitExtensionSystem(absExtDir, absDataDir); err != nil {
+	// Bootstrap extension system using the clean run-time directory
+	if err := go_backend.InitExtensionSystem(runExtDir, absDataDir); err != nil {
 		log.Printf("Warning: Failed to initialize extension system: %v", err)
 	} else {
 		log.Println("Extension system initialized successfully")
-		loaded, err := go_backend.LoadExtensionsFromDir(absExtDir)
+		loaded, err := go_backend.LoadExtensionsFromDir(runExtDir)
 		if err != nil {
-			log.Printf("Warning: Failed to load extensions from %s: %v", absExtDir, err)
+			log.Printf("Warning: Failed to load extensions from %s: %v", runExtDir, err)
 		} else {
 			log.Printf("Loaded extensions: %s", loaded)
+			for _, extID := range []string{"amazon", "apple-music", "deezer", "pandora", "qobuz-web", "soundcloud", "spotify-web", "tidal-web", "ytmusic-spotiflac"} {
+				if err := go_backend.SetExtensionEnabledByID(extID, true); err != nil {
+					log.Printf("Warning: Failed to enable extension %s: %v", extID, err)
+				} else {
+					log.Printf("Successfully enabled extension at startup: %s", extID)
+				}
+			}
 		}
 	}
 
@@ -149,4 +176,36 @@ func main() {
 	}
 
 	log.Println("Server stopped")
+}
+
+func copyExtensions(srcDir, destDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".spotiflac-ext") {
+			srcFile := filepath.Join(srcDir, entry.Name())
+			destFile := filepath.Join(destDir, entry.Name())
+			if err := copyFile(srcFile, destFile); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
