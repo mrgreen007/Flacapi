@@ -98,6 +98,7 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 | `quality` | string | No | Target audio download quality. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS` |
 | `use_extensions` | boolean | No | Enable the SpotiFLAC JS extension run-times. | `true`, `false` |
 | `service` | string | No | The specific extension provider to utilize. | `amazon`, `apple-music`, `deezer`, `pandora`, `qobuz-web`, `soundcloud`, `spotify-web`, `tidal-web`, `ytmusic-spotiflac` |
+| `use_fallback` | boolean | No | Enable automatic fallback to other active extensions if the chosen provider fails. Uses high-fidelity provider order by default without quality compromise. | `true`, `false` (default: `false`) |
 | `embed_metadata` | boolean | No | Embed ID3v2/Vorbis tags into the audio container. | `true`, `false` |
 | `embed_lyrics` | boolean | No | Fetch and embed synchronized LRC lyrics if available. | `true`, `false` |
 | `embed_max_quality_cover` | boolean | No | Download and embed high-resolution cover photo. | `true`, `false` |
@@ -186,6 +187,74 @@ Optimized delta polling for UI clients, returning only progress changes since a 
   }
   ```
 
+### Initialize Item Progress
+Initialize background progress tracking for a specific download item ID.
+
+* **Endpoint**: `POST /api/v1/download/item/init`
+* **Request Payload**:
+  ```json
+  {
+    "itemId": "item-001"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+### Finish Item Progress
+Mark the progress tracking of a download item ID as finished/completed.
+
+* **Endpoint**: `POST /api/v1/download/item/finish`
+* **Request Payload**:
+  ```json
+  {
+    "itemId": "item-001"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+### Clear Item Progress
+Remove progress tracking state/records of a completed item from the memory cache.
+
+* **Endpoint**: `POST /api/v1/download/item/clear`
+* **Request Payload**:
+  ```json
+  {
+    "itemId": "item-001"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+### Cancel Download Item
+Cancel an active background download task by its item ID.
+
+* **Endpoint**: `POST /api/v1/download/item/cancel`
+* **Request Payload**:
+  ```json
+  {
+    "itemId": "item-001"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
 ---
 
 ## 4. Metadata & Lyrics Management
@@ -230,6 +299,68 @@ Update tags on an existing audio file on disk.
   {
     "success": true,
     "message": "Metadata updated successfully"
+  }
+  ```
+
+### Download Cover Art
+Download track cover art from a URL into a safe local file path.
+
+* **Endpoint**: `POST /api/v1/metadata/cover`
+* **Request Payload**:
+  ```json
+  {
+    "coverUrl": "https://resources.tidal.com/images/1280x1280.jpg",
+    "outputPath": "./data/output/cover.jpg",
+    "maxQuality": true
+  }
+  ```
+* **Response Format**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+### Get LRC Lyrics
+Fetch synchronized LRC lyrics for a track from Spotify ID, names, or a local audio file path containing embedded lyrics.
+
+* **Endpoint**: `POST /api/v1/lyrics/get`
+* **Request Payload**:
+  ```json
+  {
+    "spotifyId": "4pt7mS6v697u697",
+    "trackName": "Tum Hi Ho",
+    "artistName": "Arijit Singh",
+    "filePath": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
+    "durationMs": 262000
+  }
+  ```
+* **Response Format**:
+  ```json
+  {
+    "lyrics": "[00:10.50]Hum tere bin ab reh nahi sakte...",
+    "source": "Musixmatch",
+    "sync_type": "LINE_SYNCED",
+    "instrumental": false
+  }
+  ```
+
+### Embed Lyrics to File
+Embed raw or synchronized LRC lyrics directly into the metadata of an audio file on disk.
+
+* **Endpoint**: `POST /api/v1/lyrics/embed`
+* **Request Payload**:
+  ```json
+  {
+    "filePath": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
+    "lyrics": "[00:10.50]Hum tere bin ab reh nahi sakte..."
+  }
+  ```
+* **Response Format**:
+  ```json
+  {
+    "success": true,
+    "message": "Lyrics embedded successfully"
   }
   ```
 
@@ -407,9 +538,28 @@ Parse a lossless `.cue` sheet file, returning song segments and subdivisions.
   }
   ```
 
+## 8. Configuration API
+
+### Set Default Download Directory
+Configure the default target download directory safely within the allowed boundary.
+
+* **Endpoint**: `POST /api/v1/config/download-dir`
+* **Request Payload**:
+  ```json
+  {
+    "path": "./data/downloads"
+  }
+  ```
+* **Response Format**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
 ---
 
-## 8. Client Integration Examples
+## 9. Client Integration Examples
 
 ### PowerShell
 ```powershell
@@ -450,7 +600,7 @@ curl -X POST http://localhost:8080/api/v1/download/strategy \
 
 ---
 
-## 🏁 9. Example API Call Flow
+## 🏁 10. Example API Call Flow
 
 This walkthrough demonstrates the step-by-step sequence of API calls to search, download, track, and locate a premium lossless song using the FLAC API Service.
 
