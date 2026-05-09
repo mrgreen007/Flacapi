@@ -322,3 +322,207 @@ func HandleSetDownloadDir(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"success":true}`))
 }
+
+// HandleCustomSearch triggers CustomSearchWithExtensionJSON in the backend.
+func HandleCustomSearch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Service string          `json:"service"`
+		Query   string          `json:"query"`
+		Options json.RawMessage `json:"options"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Service == "" || req.Query == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"service and query are required"}`, http.StatusBadRequest)
+		return
+	}
+	result, err := gb.CustomSearchWithExtensionJSON(req.Service, req.Query, string(req.Options))
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Search Failed", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleCheckAvailability checks if a track is available based on Spotify ID and/or ISRC.
+func HandleCheckAvailability(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SpotifyID string `json:"spotifyId"`
+		ISRC      string `json:"isrc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Invalid JSON", "message":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	result, err := gb.CheckAvailability(req.SpotifyID, req.ISRC)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleCheckAvailabilityByPlatform checks if a track/album/playlist is available on a specific platform.
+func HandleCheckAvailabilityByPlatform(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Platform   string `json:"platform"`
+		EntityType string `json:"entityType"`
+		EntityID   string `json:"entityId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Platform == "" || req.EntityType == "" || req.EntityID == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"platform, entityType and entityId are required"}`, http.StatusBadRequest)
+		return
+	}
+	result, err := gb.CheckAvailabilityByPlatformID(req.Platform, req.EntityType, req.EntityID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleResolveID converts a Spotify Track/Album ID to a Deezer equivalent ID.
+func HandleResolveID(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ResourceType string `json:"resourceType"`
+		SpotifyID    string `json:"spotifyId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ResourceType == "" || req.SpotifyID == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"resourceType and spotifyId are required"}`, http.StatusBadRequest)
+		return
+	}
+	result, err := gb.ConvertSpotifyToDeezer(req.ResourceType, req.SpotifyID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleGetProviderMetadata fetches resource metadata from any supported provider.
+func HandleGetProviderMetadata(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProviderID   string `json:"providerId"`
+		ResourceType string `json:"resourceType"`
+		ResourceID   string `json:"resourceId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ProviderID == "" || req.ResourceType == "" || req.ResourceID == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"providerId, resourceType and resourceId are required"}`, http.StatusBadRequest)
+		return
+	}
+	result, err := gb.GetProviderMetadataJSON(req.ProviderID, req.ResourceType, req.ResourceID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleCheckDuplicate checks if a track is already downloaded in the output directory.
+func HandleCheckDuplicate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OutputDir string `json:"outputDir"`
+		ISRC      string `json:"isrc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OutputDir == "" || req.ISRC == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"outputDir and isrc are required"}`, http.StatusBadRequest)
+		return
+	}
+	safeOutputDir, err := SafePath(req.OutputDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
+		return
+	}
+	result, err := gb.CheckDuplicate(safeOutputDir, req.ISRC)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleCheckDuplicatesBatch checks duplication for a batch of tracks.
+func HandleCheckDuplicatesBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OutputDir  string          `json:"outputDir"`
+		TracksJSON json.RawMessage `json:"tracksJSON"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OutputDir == "" || len(req.TracksJSON) == 0 {
+		http.Error(w, `{"error":"Invalid JSON", "message":"outputDir and tracksJSON are required"}`, http.StatusBadRequest)
+		return
+	}
+	safeOutputDir, err := SafePath(req.OutputDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
+		return
+	}
+	result, err := gb.CheckDuplicatesBatch(safeOutputDir, string(req.TracksJSON))
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}
+
+// HandleExtractCover extracts embedded cover art from an audio file.
+func HandleExtractCover(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AudioPath  string `json:"audioPath"`
+		OutputPath string `json:"outputPath"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AudioPath == "" || req.OutputPath == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"audioPath and outputPath are required"}`, http.StatusBadRequest)
+		return
+	}
+	safeAudio, err := SafePath(req.AudioPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
+		return
+	}
+	safeOutput, err := SafePath(req.OutputPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
+		return
+	}
+	err = gb.ExtractCoverToFile(safeAudio, safeOutput)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"success":true}`))
+}
+
+// HandleParseCueSheet parses a local .cue sheet file.
+func HandleParseCueSheet(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CuePath  string `json:"cuePath"`
+		AudioDir string `json:"audioDir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CuePath == "" || req.AudioDir == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"cuePath and audioDir are required"}`, http.StatusBadRequest)
+		return
+	}
+	safeCue, err := SafePath(req.CuePath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
+		return
+	}
+	safeAudioDir, err := SafePath(req.AudioDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
+		return
+	}
+	result, err := gb.ParseCueSheet(safeCue, safeAudioDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(result))
+}

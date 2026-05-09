@@ -118,6 +118,9 @@ func main() {
 
 	// API Routing
 	r.Route("/api/v1", func(r chi.Router) {
+		// Custom Extension Search
+		r.Post("/search", api.HandleCustomSearch)
+
 		// Downloads & Progress
 		r.Post("/download/strategy", api.HandleDownloadByStrategy)
 		r.Get("/download/progress", api.HandleGetDownloadProgress)
@@ -130,14 +133,28 @@ func main() {
 		r.Post("/download/item/clear", api.HandleClearItemProgress)
 		r.Post("/download/item/cancel", api.HandleCancelDownload)
 
+		// Catalog & Availability
+		r.Post("/catalog/availability", api.HandleCheckAvailability)
+		r.Post("/catalog/availability/platform", api.HandleCheckAvailabilityByPlatform)
+		r.Post("/catalog/resolve-id", api.HandleResolveID)
+		r.Post("/catalog/metadata", api.HandleGetProviderMetadata)
+
 		// Metadata
 		r.Post("/metadata/read", api.HandleReadMetadata)
 		r.Post("/metadata/edit", api.HandleEditMetadata)
 		r.Post("/metadata/cover", api.HandleDownloadCover)
+		r.Post("/metadata/extract-cover", api.HandleExtractCover)
 
 		// Lyrics
 		r.Post("/lyrics/get", api.HandleGetLyrics)
 		r.Post("/lyrics/embed", api.HandleEmbedLyrics)
+
+		// Deduplication
+		r.Post("/download/duplicate/check", api.HandleCheckDuplicate)
+		r.Post("/download/duplicate/check-batch", api.HandleCheckDuplicatesBatch)
+
+		// Library & Cue Sheet
+		r.Post("/library/parse-cue", api.HandleParseCueSheet)
 
 		// Configuration
 		r.Post("/config/download-dir", api.HandleSetDownloadDir)

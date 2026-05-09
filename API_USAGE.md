@@ -20,7 +20,49 @@ Verify the server is online and the API is reachable.
 
 ---
 
-## 2. Downloads & Strategy API
+## 2. Search & Downloads API
+
+### Custom Search via Extension
+Query paginated artist tracks directly from the selected SpotiFLAC extension's music service catalog.
+
+* **Endpoint**: `POST /api/v1/search`
+* **Request Headers**: `Content-Type: application/json`
+* **Request Payload**:
+  ```json
+  {
+    "service": "tidal-web",
+    "query": "Arijit Singh",
+    "options": {
+      "type": "track"
+    }
+  }
+  ```
+* **Success Response Format**:
+  ```json
+  [
+    {
+      "id": "12345678",
+      "name": "Tum Hi Ho",
+      "artists": ["Arijit Singh"],
+      "album_name": "Aashiqui 2",
+      "album_artist": "Arijit Singh",
+      "duration_ms": 262000,
+      "images": "https://resources.tidal.com/images/1280x1280.jpg",
+      "release_date": "2019-12-29",
+      "track_number": 1,
+      "total_tracks": 10,
+      "disc_number": 1,
+      "total_discs": 1,
+      "isrc": "QM22L1901797",
+      "provider_id": "tidal",
+      "item_type": "track",
+      "album_type": "album",
+      "audio_quality": "HI_RES"
+    }
+  ]
+  ```
+
+---
 
 ### Download by Strategy
 The primary endpoint to search, resolve, and download audio tracks using native fallback strategies or SpotiFLAC extensions.
@@ -93,7 +135,7 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 
 ---
 
-## 3. Progress tracking & Lifecycles
+## 3. Progress Tracking & Lifecycles
 
 ### Get Single Progress
 Retrieve the progress status of the currently active download.
@@ -193,7 +235,181 @@ Update tags on an existing audio file on disk.
 
 ---
 
-## 5. Client Integration Examples
+## 5. Catalog & Availability API
+
+### Check Track Availability
+Check if a track is available across platforms using its Spotify ID or ISRC code.
+
+* **Endpoint**: `POST /api/v1/catalog/availability`
+* **Payload**:
+  ```json
+  {
+    "spotifyId": "4pt7mS6v697u697",
+    "isrc": "QM22L1901797"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "available": true,
+    "platforms": ["spotify", "tidal", "deezer"]
+  }
+  ```
+
+### Check Availability By Platform ID
+Check if an entity (track, album, playlist) is available on a specific music platform.
+
+* **Endpoint**: `POST /api/v1/catalog/availability/platform`
+* **Payload**:
+  ```json
+  {
+    "platform": "tidal",
+    "entityType": "track",
+    "entityId": "12345678"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "available": true
+  }
+  ```
+
+### Cross-Platform ID Resolution
+Resolve a Spotify ID into a corresponding Deezer ID.
+
+* **Endpoint**: `POST /api/v1/catalog/resolve-id`
+* **Payload**:
+  ```json
+  {
+    "resourceType": "track",
+    "spotifyId": "4pt7mS6v697u"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "deezer_id": "123456"
+  }
+  ```
+
+### Fetch Provider Metadata
+Fetch raw metadata from any supported extension provider.
+
+* **Endpoint**: `POST /api/v1/catalog/metadata`
+* **Payload**:
+  ```json
+  {
+    "providerId": "tidal-web",
+    "resourceType": "track",
+    "resourceId": "12345678"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "title": "Tum Hi Ho",
+    "artist": "Arijit Singh",
+    "duration_ms": 262000
+  }
+  ```
+
+---
+
+## 6. Deduplication API
+
+### Check Single Duplicate
+Check if a track has already been downloaded using its ISRC.
+
+* **Endpoint**: `POST /api/v1/download/duplicate/check`
+* **Payload**:
+  ```json
+  {
+    "outputDir": "./data/output",
+    "isrc": "QM22L1901797"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "duplicate": true,
+    "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a"
+  }
+  ```
+
+### Check Duplicate Batch
+Perform duplicate verification for a batch of tracks.
+
+* **Endpoint**: `POST /api/v1/download/duplicate/check-batch`
+* **Payload**:
+  ```json
+  {
+    "outputDir": "./data/output",
+    "tracksJSON": "[{\"isrc\":\"QM22L1901797\"}]"
+  }
+  ```
+* **Response**:
+  ```json
+  [
+    {
+      "isrc": "QM22L1901797",
+      "duplicate": true,
+      "file_path": "./data/output/Arijit Singh - Tum Hi Ho.m4a"
+    }
+  ]
+  ```
+
+---
+
+## 7. Advanced Cover Art & Cue Sheets
+
+### Extract Embedded Cover Art
+Extract embedded cover photo from a local audio file on disk.
+
+* **Endpoint**: `POST /api/v1/metadata/extract-cover`
+* **Payload**:
+  ```json
+  {
+    "audioPath": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
+    "outputPath": "./data/output/cover.jpg"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+### Parse Lossless CUE Sheets
+Parse a lossless `.cue` sheet file, returning song segments and subdivisions.
+
+* **Endpoint**: `POST /api/v1/library/parse-cue`
+* **Payload**:
+  ```json
+  {
+    "cuePath": "./data/music/album.cue",
+    "audioDir": "./data/music"
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "album": "Masterpieces",
+    "artist": "Various Artists",
+    "tracks": [
+      {
+        "index": 1,
+        "title": "Intro",
+        "start_time": "00:00:00"
+      }
+    ]
+  }
+  ```
+
+---
+
+## 8. Client Integration Examples
 
 ### PowerShell
 ```powershell
@@ -231,3 +447,104 @@ curl -X POST http://localhost:8080/api/v1/download/strategy \
        "embed_max_quality_cover": true
      }'
 ```
+
+---
+
+## 🏁 9. Example API Call Flow
+
+This walkthrough demonstrates the step-by-step sequence of API calls to search, download, track, and locate a premium lossless song using the FLAC API Service.
+
+### Step 1: Artist Track Search & Pagination (Client UI)
+First, the client queries our newly exposed extension search API to search for an artist's tracks directly from Tidal/Deezer:
+
+* **Request**: `POST http://localhost:8080/api/v1/search`
+* **Payload**:
+  ```json
+  {
+    "service": "tidal-web",
+    "query": "Arijit Singh",
+    "options": {
+      "type": "track"
+    }
+  }
+  ```
+* **Response**:
+  ```json
+  [
+    {
+      "id": "12345678",
+      "name": "Tum Hi Ho",
+      "artists": ["Arijit Singh"],
+      "album_name": "Aashiqui 2",
+      "duration_ms": 262000
+    },
+    {
+      "id": "87654321",
+      "name": "Channa Mereya",
+      "artists": ["Arijit Singh"],
+      "album_name": "Ae Dil Hai Mushkil",
+      "duration_ms": 289000
+    }
+  ]
+  ```
+
+### Step 2: User Picks a Track
+The user selects a track from the paginated list (for example, **"Tum Hi Ho"**). The client extracts the precise metadata fields (`track_name`, `artist_name`, `album_name`) to prepare the download payload.
+
+### Step 3: Dispatch Lossless Download Request
+The client sends the precise track metadata to the FLAC API, requesting the maximum quality setting (**`LOSSLESS`**) via the Tidal extension to download the studio-master audio:
+
+* **Request**: `POST http://localhost:8080/api/v1/download/strategy`
+* **Request Headers**: `Content-Type: application/json`
+* **Payload**:
+  ```json
+  {
+    "track_name": "Tum Hi Ho",
+    "artist_name": "Arijit Singh",
+    "album_name": "Aashiqui 2",
+    "output_dir": "./data/output",
+    "output_ext": ".flac",
+    "quality": "LOSSLESS",
+    "use_extensions": true,
+    "service": "tidal-web",
+    "embed_metadata": true,
+    "embed_max_quality_cover": true
+  }
+  ```
+
+### Step 4: Track Real-Time Progress (Background Thread Polling)
+While the download strategy endpoint is actively running in Step 3, the client UI starts a background polling thread to fetch real-time download status, percentages, speed, and ETA to display a progress bar to the user:
+
+* **Request**: `GET http://localhost:8080/api/v1/download/progress`
+* **Sample Response (During Download)**:
+  ```json
+  {
+    "active": true,
+    "progress": 55.4,
+    "speed": "3.1 MB/s",
+    "eta": "00:06",
+    "bytes_downloaded": 5829103,
+    "total_bytes": 10521883
+  }
+  ```
+
+### Step 5: Final Success Response & File Retrieval
+Once the download is completed, the download strategy request (Step 3) completes successfully and returns the final metadata along with the absolute local file path:
+
+* **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Downloaded from tidal-web",
+    "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a",
+    "actual_bit_depth": 16,
+    "actual_sample_rate": 44100,
+    "service": "tidal-web",
+    "title": "Tum Hi Ho (From \"Aashiqui 2\")",
+    "artist": "Arijit Singh",
+    "album": "Aashiqui 2",
+    "cover_url": "https://resources.tidal.com/images/16bd0ffc/1681/4568/919c/9dc4ba55176f/1280x1280.jpg"
+  }
+  ```
+* **Locating the File**: The client can now play the 100% CD-Quality Lossless ALAC file (`Arijit Singh - Tum Hi Ho.m4a`) from `./data/output/` on disk!
+
