@@ -109,3 +109,22 @@ All data payloads are JSON.
 |----------|-------------|---------|
 | `FLACAPI_DATA_DIR` | Root directory for downloads and app files. | `./data` |
 | `FLACAPI_EXTENSIONS_DIR` | Directory containing SpotiFLAC extensions. | `./extensions` |
+
+---
+
+## 🧼 Linting & CI/CD
+
+This repository uses **`golangci-lint`** to enforce clean code and catch potential bugs early. 
+
+### GitHub Actions
+The repository is fully configured with a **GitHub Actions CI Workflow** (`.github/workflows/lint-build-test.yml`) that automatically runs both the linting suite and testing suite on every push or pull request to the `main` branch.
+
+### Local Linting
+To run the linters locally:
+1. **Install golangci-lint**: Follow the [official installation guide](https://golangci-lint.run/welcome/install/).
+2. **Run the linter**:
+   ```bash
+   golangci-lint run
+   ```
+   *Note: This automatically picks up our `.golangci.yml` rules and safely ignores the vendored `internal/go_backend` directory.*
+
