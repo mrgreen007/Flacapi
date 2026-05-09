@@ -2,13 +2,15 @@ version: "3.8"
 
 services:
   flacapi:
-    build: .
+    image: ghcr.io/mrgreen007/flacapi:latest
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/data                    # persistent storage for downloads
+      - ./data:/data                    # app internal databases and state
+      - ./downloads:/downloads          # clean output folder for user downloads
       - ./extensions:/app/extensions:ro  # keep extensions synced in read-only mode
     environment:
       - FLACAPI_DATA_DIR=/data
+      - FLACAPI_DOWNLOADS_DIR=/downloads
       - FLACAPI_EXTENSIONS_DIR=/app/extensions
     restart: unless-stopped

@@ -13,19 +13,38 @@ import (
 	gb "github.com/zarz/spotiflac_android/go_backend"
 )
 
-// DataDir is the validated root folder for all writes and reads.
-// It can be customized at server startup.
+// DataDir is the primary root folder for app data and default relative path resolving.
 var DataDir = "./data"
 
+// AdditionalAllowedDirs stores extra paths (like separate mounted downloads volume) to permit access.
+var AdditionalAllowedDirs []string
+
+func isWithinDir(baseDir, targetPath string) bool {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absBase, absTarget)
+	if err != nil {
+		return false
+	}
+	// Validates that resolved relative path does not move UP using ".." and is not the ".." itself
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
 // SafePath checks if the given path is safe and returns the cleaned absolute or relative-to-data path.
-// It prevents path traversal vulnerability.
+// It prevents path traversal and enforces boundaries against DataDir and AdditionalAllowedDirs.
 func SafePath(unsafePath string) (string, error) {
 	if unsafePath == "" {
 		return "", fmt.Errorf("empty path")
 	}
 	cleaned := filepath.Clean(unsafePath)
 
-	// Resolve relative paths against DataDir
+	// Resolve relative paths against primary DataDir
 	var targetPath string
 	if filepath.IsAbs(cleaned) {
 		targetPath = cleaned
@@ -33,22 +52,25 @@ func SafePath(unsafePath string) (string, error) {
 		targetPath = filepath.Join(DataDir, cleaned)
 	}
 
-	// Double check that the cleaned path remains within DataDir boundary
+	// Resolve to absolute representation
 	absTarget, err := filepath.Abs(targetPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	absDataDir, err := filepath.Abs(DataDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to get absolute data dir: %w", err)
+
+	// Verify bound verification against default DataDir
+	if isWithinDir(DataDir, absTarget) {
+		return absTarget, nil
 	}
 
-	rel, err := filepath.Rel(absDataDir, absTarget)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("access denied: path '%s' is outside of allowed directory '%s'", unsafePath, DataDir)
+	// Verify bound verification against other permitted paths (like a separate downloads volume)
+	for _, dir := range AdditionalAllowedDirs {
+		if dir != "" && isWithinDir(dir, absTarget) {
+			return absTarget, nil
+		}
 	}
 
-	return absTarget, nil
+	return "", fmt.Errorf("access denied: path is outside of allowed directory boundaries")
 }
 
 // HandleDownloadByStrategy maps to DownloadByStrategy in backend.

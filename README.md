@@ -109,8 +109,9 @@ A quick overview of active endpoints is provided below. For request payload stru
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FLACAPI_DATA_DIR` | Root directory for downloads and app files. | `./data` |
-| `FLACAPI_EXTENSIONS_DIR` | Directory containing SpotiFLAC extensions. | `./extensions` |
+| `FLACAPI_DATA_DIR` | Base directory for persistent app databases and caching. | `./data` |
+| `FLACAPI_DOWNLOADS_DIR` | Clean output folder specifically for audio downloads (Highly Recommended for Docker). | (Empty, defaults to DataDir) |
+| `FLACAPI_EXTENSIONS_DIR` | Local directory containing SpotiFLAC source extensions. | `./extensions` |
 
 ---
 

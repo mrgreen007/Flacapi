@@ -29,6 +29,7 @@ func main() {
 	if extensionsDir == "" {
 		extensionsDir = "./extensions"
 	}
+	downloadsDir := os.Getenv("FLACAPI_DOWNLOADS_DIR")
 
 	absDataDir, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -39,12 +40,25 @@ func main() {
 		log.Fatalf("Invalid extensions directory path %s: %v", extensionsDir, err)
 	}
 
+	var absDownloadsDir string
+	if downloadsDir != "" {
+		absDownloadsDir, err = filepath.Abs(downloadsDir)
+		if err != nil {
+			log.Fatalf("Invalid downloads directory path %s: %v", downloadsDir, err)
+		}
+	}
+
 	// Ensure directories exist
 	if err := os.MkdirAll(absDataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory %s: %v", absDataDir, err)
 	}
 	if err := os.MkdirAll(absExtDir, 0755); err != nil {
 		log.Fatalf("Failed to create extensions directory %s: %v", absExtDir, err)
+	}
+	if absDownloadsDir != "" {
+		if err := os.MkdirAll(absDownloadsDir, 0755); err != nil {
+			log.Fatalf("Failed to create downloads directory %s: %v", absDownloadsDir, err)
+		}
 	}
 
 	// Determine active source extensions directory
@@ -68,8 +82,16 @@ func main() {
 	// Configure handler base directory
 	api.DataDir = absDataDir
 
-	// Initialize backend download folder
-	if err := go_backend.SetDownloadDirectory(absDataDir); err != nil {
+	// Initialize backend default download folder and setup path safety boundaries
+	defaultDownloadPath := absDataDir
+	if absDownloadsDir != "" {
+		defaultDownloadPath = absDownloadsDir
+		// Allow and record independent download mount so SafePath grants access
+		api.AdditionalAllowedDirs = append(api.AdditionalAllowedDirs, absDownloadsDir)
+		go_backend.AllowDownloadDir(absDownloadsDir)
+	}
+
+	if err := go_backend.SetDownloadDirectory(defaultDownloadPath); err != nil {
 		log.Printf("Warning: Failed to set default download directory: %v", err)
 	}
 	go_backend.AllowDownloadDir(absDataDir)
