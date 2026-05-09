@@ -91,6 +91,10 @@ func main() {
 					log.Printf("Successfully enabled extension at startup: %s", extID)
 				}
 			}
+
+			// Configure default fallback priorities to support automatic multi-provider lossless downloads (e.g. from Spotify metadata bootstrap)
+			_ = go_backend.SetProviderPriorityJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "ytmusic-spotiflac", "amazon", "soundcloud", "pandora"]`)
+			_ = go_backend.SetExtensionFallbackProviderIDsJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "ytmusic-spotiflac", "amazon", "soundcloud", "pandora"]`)
 		}
 	}
 
