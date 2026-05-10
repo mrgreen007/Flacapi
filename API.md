@@ -97,7 +97,7 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 | `isrc` | string | No | Optional high-precision unique lookup key. If supplied, names become optional. | |
 | `output_dir` | string | No | Relative or absolute path where the final audio file will be saved. | Relative paths automatically resolve to server root. |
 | `output_ext` | string | No | Target extension for conversion. | `.flac`, `.m4a`, `.opus` |
-| `quality` | string | No | Target audio download quality. If set to `LOSSLESS`, the API explicitly filters out lossy providers from the fallback chain. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS` |
+| `quality` | string | No | Target audio download quality. If set to `LOSSLESS` or `HI_RES`, the API explicitly filters out lossy providers from the fallback chain. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS`, `HI_RES`, `HI_RES_LOSSLESS` |
 | `use_extensions` | boolean | No | Enable the SpotiFLAC JS extension run-times. | `true`, `false` |
 | `service` | string | No | The specific extension provider to utilize. | `amazon`, `apple-music`, `deezer`, `pandora`, `qobuz-web`, `soundcloud`, `spotify-web`, `tidal-web`, `ytmusic-spotiflac` |
 | `use_fallback` | boolean | No | Enable automatic fallback to other active extensions if the chosen provider fails. If `quality` is `LOSSLESS`, fallback is strictly restricted to lossless providers only. | `true`, `false` (default: `false`) |
@@ -114,25 +114,35 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 > * **Atomic Quality Sentinel**: When requesting `LOSSLESS` quality, the engine performs deep packet interrogation post-download. If a proxy server emits a secret codec downgrade (e.g. delivers lossy AAC hidden in a FLAC container), the engine intercepts, nukes the corrupt payload automatically, and invokes an immediate cascade recovery to an alternative provider transparently without alerting the client.
 > * **Zero-Maintenance Dynamic Refreshes**: Upon startup, the server establishes real-time link-state parity with the community-managed GitHub Extension Registry, syncing the latest runtime tokens and delivery mirrors automatically so you never have to adjust your configuration files manually to chase provider patches.
 
-#### **Success Response Format (Lossless ALAC/Tidal)**
+#### **Success Response Format (PascalCase Schema)**
+> [!IMPORTANT]
+> Due to the architecture of the core backend proxy, Successful Responses utilize standard **PascalCase** keys, whereas Error Responses utilize `snake_case`. Clients should configure their JSON deserializers accordingly.
+
 ```json
 {
-  "success": true,
-  "message": "Downloaded from tidal-web",
-  "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\downloads\\Arijit Singh - Tum Hi Ho.m4a",
-  "actual_bit_depth": 16,
-  "actual_sample_rate": 44100,
-  "service": "tidal-web",
-  "title": "Tum Hi Ho (From \"Aashiqui 2\")",
-  "artist": "Arijit Singh",
-  "album": "Aashiqui 2",
-  "album_artist": "Arijit Singh",
-  "release_date": "2019-12-29",
-  "track_number": 1,
-  "disc_number": 1,
-  "isrc": "QM22L1901797",
-  "cover_url": "https://resources.tidal.com/images/16bd0ffc/1681/4568/919c/9dc4ba55176f/1280x1280.jpg",
-  "copyright": "2019 Arijit Singh"
+  "FilePath": "C:\\Users\\sabuj\\Downloads\\Arijit Singh - Tum Hi Ho.m4a",
+  "BitDepth": 16,
+  "SampleRate": 44100,
+  "Title": "Tum Hi Ho (From \"Aashiqui 2\")",
+  "Artist": "Arijit Singh",
+  "Album": "Aashiqui 2",
+  "ReleaseDate": "2019-12-29",
+  "TrackNumber": 1,
+  "TotalTracks": 10,
+  "DiscNumber": 1,
+  "TotalDiscs": 1,
+  "ISRC": "QM22L1901797",
+  "CoverURL": "https://resources.tidal.com/images/...",
+  "Genre": "Pop",
+  "Label": "T-Series",
+  "Copyright": "2019 Arijit Singh",
+  "Composer": "Mithoon",
+  "LyricsLRC": "",
+  "DecryptionKey": "",
+  "Decryption": null,
+  "ActualExtension": ".m4a",
+  "ActualContainer": "ALAC",
+  "RequiresContainerConversion": false
 }
 ```
 

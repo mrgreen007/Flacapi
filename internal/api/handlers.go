@@ -172,7 +172,7 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	useFallback, _ := reqMap["use_fallback"].(bool)
 	requestedService, _ := reqMap["service"].(string)
 
-	if strings.ToUpper(strings.TrimSpace(quality)) == qualityLossless && useFallback && reqMap != nil {
+	if isLosslessRequest(quality) && useFallback && reqMap != nil {
 		providers, pErr := getFilteredLosslessPriority(requestedService)
 		if pErr == nil && len(providers) > 0 {
 			reqMap["use_fallback"] = false // Set to false so go_backend doesn't perform inherent fallback loop
@@ -195,8 +195,16 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 				if loopErr == nil {
 					var rMap map[string]interface{}
 					if json.Unmarshal([]byte(loopResult), &rMap) == nil {
-						if succ, _ := rMap["success"].(bool); succ {
-							filePath, _ := rMap["file_path"].(string)
+						// CRITICAL FIX: Backend returns PascalCase 'FilePath' and does not emit 'success' bool for successful runs.
+						// Validating success by existence of returned target path directly.
+						filePath := ""
+						if fp, ok := rMap["FilePath"].(string); ok && fp != "" {
+							filePath = fp
+						} else if fp, ok := rMap["file_path"].(string); ok && fp != "" {
+							filePath = fp
+						}
+
+						if filePath != "" {
 							// Strict validation: probe content stream to verify genuine codec fidelity
 							if isLosslessCodec(filePath) {
 								result = loopResult
@@ -242,7 +250,8 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		filePath, _ := respMap["file_path"].(string)
 
 		// ATOMIC QUALITY SENTINEL: Catch-all safety gate protecting delivery from ANY secret codec downgrades.
-		if success && strings.ToUpper(strings.TrimSpace(quality)) == qualityLossless && filePath != "" {
+		// Final Safety Check: If client explicitly requested lossless delivery tier, force deep packet inspection
+		if success && isLosslessRequest(quality) && filePath != "" {
 			if !isLosslessCodec(filePath) {
 				// Hard Rejection: The delivered container violates strict lossless policy.
 				_ = os.Remove(filePath)
@@ -258,7 +267,7 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		coverURL, _ := respMap["cover_url"].(string)
+		coverURL := getStringAny(respMap, "cover_url", "CoverURL")
 		finalFilePath := filePath
 		needsUpdate := false
 
@@ -305,29 +314,31 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 			}
 			baseArgs = append(baseArgs, "-c:a", "copy", "-c:v", "copy")
 
-			// Extrapolate all logical tags residing inside result construct
-			addMeta := func(ffmpegKey, resKey string) {
-				if val, ok := respMap[resKey].(string); ok && strings.TrimSpace(val) != "" {
+			// Extrapolate all logical tags residing inside result construct ensuring multi-case fallback support
+			addMeta := func(ffmpegKey string, keys ...string) {
+				val := getStringAny(respMap, keys...)
+				if strings.TrimSpace(val) != "" {
 					baseArgs = append(baseArgs, "-metadata", fmt.Sprintf("%s=%s", ffmpegKey, val))
 				}
 			}
-			addMetaNum := func(ffmpegKey, resKey string) {
-				if val, ok := respMap[resKey].(float64); ok && val > 0 {
+			addMetaNum := func(ffmpegKey string, keys ...string) {
+				val := getFloatAny(respMap, keys...)
+				if val > 0 {
 					baseArgs = append(baseArgs, "-metadata", fmt.Sprintf("%s=%d", ffmpegKey, int(val)))
 				}
 			}
 
-			addMeta("title", "title")
-			addMeta("artist", "artist")
-			addMeta("album", "album")
-			addMeta("album_artist", "album_artist")
-			addMeta("date", "release_date")
-			addMeta("genre", "genre")
-			addMeta("copyright", "copyright")
-			addMeta("composer", "composer")
-			addMeta("comment", "isrc") // Ubiquitous lookup location for custom player identification
-			addMetaNum("track", "track_number")
-			addMetaNum("disc", "disc_number")
+			addMeta("title", "title", "Title")
+			addMeta("artist", "artist", "Artist")
+			addMeta("album", "album", "Album")
+			addMeta("album_artist", "album_artist", "AlbumArtist")
+			addMeta("date", "release_date", "ReleaseDate")
+			addMeta("genre", "genre", "Genre")
+			addMeta("copyright", "copyright", "Copyright")
+			addMeta("composer", "composer", "Composer")
+			addMeta("comment", "isrc", "ISRC") // Ubiquitous lookup location for custom player identification
+			addMetaNum("track", "track_number", "TrackNumber")
+			addMetaNum("disc", "disc_number", "DiscNumber")
 
 			baseArgs = append(baseArgs, "-y", tempOutPath)
 
@@ -960,7 +971,6 @@ func isLosslessCodec(filePath string) bool {
 	return codec == "flac" || codec == "alac" || codec == "wav" || codec == "aiff" || strings.Contains(codec, "pcm")
 }
 
-
 func safeStreamCopy(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -974,4 +984,30 @@ func safeStreamCopy(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+func getStringAny(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func getFloatAny(m map[string]interface{}, keys ...string) float64 {
+	for _, k := range keys {
+		if v, ok := m[k].(float64); ok {
+			return v
+		}
+		if v, ok := m[k].(int); ok {
+			return float64(v)
+		}
+	}
+	return 0
+}
+
+func isLosslessRequest(q string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(q))
+	return upper == qualityLossless || upper == "HI_RES" || upper == "HI_RES_LOSSLESS"
 }
