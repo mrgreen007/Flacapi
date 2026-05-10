@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	gb "github.com/zarz/spotiflac_android/go_backend"
 )
@@ -116,8 +117,8 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 			finalTargetDir = outDir
 		}
 
-		// Redirect current transactional load into hidden local staging reservoir
-		stagingDir := filepath.Join(DataDir, "staging")
+		// Redirect current transactional load into hidden system temporary reservoir to prevent mount locks
+		stagingDir := filepath.Join(os.TempDir(), "spotiflac_staging")
 		_ = os.MkdirAll(stagingDir, 0755)
 		reqMap["output_dir"] = stagingDir
 
@@ -142,6 +143,11 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 			if _, exists := reqMap[key]; !exists {
 				reqMap[key] = true
 			}
+		}
+
+		// AUTOMATED PROGRESS BOOTSTRAPPING: Auto-inject trackable handle if omitted to guarantee pipeline fires
+		if itemID, ok := reqMap["item_id"].(string); !ok || strings.TrimSpace(itemID) == "" {
+			reqMap["item_id"] = fmt.Sprintf("dl-%d", time.Now().UnixMilli())
 		}
 
 		// Mandate LOSSLESS resolution default to force strict non-cascading retrievals

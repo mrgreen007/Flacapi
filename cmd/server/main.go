@@ -95,12 +95,15 @@ func main() {
 		srcExtDir = filepath.Join(absExtDir, "extensions")
 	}
 
-	// Point run-time extensions to git-ignored data subdirectory to prevent dirtying submodules
-	runExtDir := filepath.Join(absDataDir, "extensions_run")
+	// Point run-time extensions to the system temporary pool to prevent volume mount permission issues in containers
+	runExtDir := filepath.Join(os.TempDir(), "spotiflac_extensions_run")
 	_ = os.RemoveAll(runExtDir)
 	if err := os.MkdirAll(runExtDir, 0755); err != nil {
 		log.Fatalf("Failed to create run-time extensions directory %s: %v", runExtDir, err)
 	}
+
+	// Flush any residual garbage accumulated from abrupt crashes in transaction staging pools
+	_ = os.RemoveAll(filepath.Join(os.TempDir(), "spotiflac_staging"))
 
 	// Copy .spotiflac-ext packages to the run-time directory
 	if err := copyExtensions(srcExtDir, runExtDir); err != nil {
@@ -340,8 +343,8 @@ func autoUpdateExtensions(absDataDir string) {
 		return
 	}
 
-	// Construct unique temporary directory for payload extraction
-	tempDir := filepath.Join(absDataDir, "extension_downloads_tmp")
+	// Construct unique temporary directory in system temp pool for secure artifact extraction
+	tempDir := filepath.Join(os.TempDir(), "spotiflac_extension_sync_tmp")
 	_ = os.RemoveAll(tempDir) // Flush previous leftover buffers
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		log.Printf("[ExtensionSync] Local staging access denied: %v", err)

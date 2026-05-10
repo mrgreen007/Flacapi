@@ -7,18 +7,21 @@ A lightweight, robust Go-based HTTP wrapper for the **SpotiFLAC** download engin
 ## 🚀 Features
 
 - **Standard HTTP endpoints** translating Go/JSON payloads.
-- **Pristine Submodule Protection**: Automatically copies extension `.spotiflac-ext` packages from the clean git submodule into a git-ignored `./data/extensions_run` directory at startup. This guarantees your `extensions` and `go_backend` submodules remain **100% clean and unmodified** with no untracked extraction directories inside them!
-- **Automatic Extension Enablement**: All 9 SpotiFLAC extensions are programmatically loaded and enabled automatically on server startup.
-- **Consistent Output Directory Interceptor**: Intercepts `output_dir` in download payloads and resolves relative paths (like `./data/output`) to absolute paths. This ensures that **whatever extension or provider is used, the final audio file is always saved to the exact same folder**.
-- **Security Check**: Safe path resolution with path-traversal protection.
-- **Cross-Platform Support**: Works natively on Windows, macOS, and Linux (including Docker).
+- **Atomic Containment (Secure Staging)**: Isolates incoming data bytes in an anonymous system temporary staging reservoir during download, only handing the file to your permanent target folder AFTER integrity guarantees and tags complete successfully.
+- **Ultra-Secure Sandbox Protection**: Dynamically clones extension runtime artifacts into the host system's isolated `os.TempDir()`. This shields you from Docker permission bottlenecks and ensures your git directory remains absolutely sterile.
+- **Zero-Maintenance Dynamic Synchronizers**: Translucently interrogates the community extension registry at boot, hot-patching broken runtime tokens and refreshing delivery mirrors automatically.
+- **Atomic Quality Sentinel**: Performs byte-level container inspection post-download; intercepting and automatically purging hidden codec downgrades before fallback cascades instantly engage.
+- **Smart Conversions & Tagging**: Injects ID3v2/Vorbis tag blocks natively and optionally normalizes disparate lossless sources (like ALAC) into pure FLAC formats via high-speed processing pipelines.
+- **Advanced Tracking Pipeline**: Implicit handle injection guarantees real-time speed, percentage, and status polling availability globally without manual client instrumentation.
+- **Full Cross-Platform Compatibility**: Pure, isolated runtime engineering optimized natively for Windows, Mac, and Linux (Container-ready).
 
 ---
 
 ## 🛠 Prerequisites
 
-- **Go**: Version `1.25` or higher (if running natively).
-- **Docker**: Optional, for containerized environments.
+- **Go**: Version `1.25` or higher (if compiling natively).
+- **FFmpeg / FFprobe**: Required system environment PATH availability for atomic tagging and codec inspection.
+- **Docker**: Fully integrated (includes internal FFmpeg distribution automatically).
 
 ---
 
@@ -76,7 +79,7 @@ sh ./scripts/sync-go-backend.sh
 
 ## 📋 API Endpoints
 
-A quick overview of active endpoints is provided below. For request payload structures, field-by-field definitions, response schemas, and curl/PowerShell client integration examples, please refer to the comprehensive [API Usage Documentation (API_USAGE.md)](file:///c:/Users/sabuj/Workspace/Projects/Sabuj.in/Flacapi/API_USAGE.md).
+A quick overview of active endpoints is provided below. For request payload structures, field-by-field definitions, response schemas, and curl/PowerShell client integration examples, please refer to the comprehensive **[API Reference Documentation (API.md)](./API.md)**.
 
 ### 🏥 System
 - **`GET /health`** — Quick server health check. Returns `{"status":"ok"}`.
@@ -109,9 +112,16 @@ A quick overview of active endpoints is provided below. For request payload stru
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FLACAPI_DATA_DIR` | Base directory for persistent app databases and caching. | `./data` |
-| `FLACAPI_DOWNLOADS_DIR` | Clean output folder specifically for audio downloads (Highly Recommended for Docker). | (Empty, defaults to DataDir) |
-| `FLACAPI_EXTENSIONS_DIR` | Local directory containing SpotiFLAC source extensions. | `./extensions` |
+| `FLACAPI_DATA_DIR` | Base directory for persistent app databases and configs. | `./data` |
+| `FLACAPI_DOWNLOADS_DIR` | Master clean output library for audio deliveries. | (Maps to DataDir) |
+| `FLACAPI_EXTENSIONS_DIR` | Repository base holding source `.spotiflac-ext` packages. | `./extensions` |
+| `FLACAPI_CONVERSION_STRATEGY` | Set to `FORCE_FLAC` to automatically convert all lossless deliveries to `.flac` format. | `ORIGINAL` |
+| `FLACAPI_AUTO_UPDATE_EXTENSIONS` | Toggle automated mirror synchronization on boot cycles. | `true` |
+| `FLACAPI_PROVIDER_PRIORITY` | Override fallback precedence chain (e.g., `apple-music,tidal-web`). | (System Default) |
+| `FLACAPI_EXTENSION_STORE_URL` | Supply a manual extension store URL/File registry overriding community defaults. | (Public Repo) |
+| `FLACAPI_APPLE_PROXY_KEY` | Authorization key enabling premium Apple Music provider proxy pipelines. | (Empty) |
+| `FLACAPI_TIDAL_MIRROR_URL` | Private custom endpoint string overriding standard Tidal web extraction vectors. | (Empty) |
+| `FLACAPI_TIDAL_TOKEN` | Dedicated scraper token injected implicitly into active Tidal payload requests. | (Empty) |
 
 ---
 

@@ -33,7 +33,7 @@ COPY --from=builder /app/bin/flacapi ./flacapi
 COPY --from=builder /app/extensions ./extensions
 
 # Create default directories and adjust permissions
-RUN mkdir -p /data /downloads /extensions && chown -R app:app /data /downloads /extensions /app
+RUN mkdir -p /data /downloads && chown -R app:app /data /downloads /app
 
 USER app
 EXPOSE 8080
@@ -42,5 +42,11 @@ ENV FLACAPI_DATA_DIR=/data
 ENV FLACAPI_DOWNLOADS_DIR=/downloads
 ENV FLACAPI_EXTENSIONS_DIR=/app/extensions
 ENV FLACAPI_CONVERSION_STRATEGY=ORIGINAL
+ENV FLACAPI_AUTO_UPDATE_EXTENSIONS=true
+ENV FLACAPI_EXTENSION_STORE_URL=
+ENV FLACAPI_PROVIDER_PRIORITY=
+ENV FLACAPI_APPLE_PROXY_KEY=
+ENV FLACAPI_TIDAL_MIRROR_URL=
+ENV FLACAPI_TIDAL_TOKEN=
 
 ENTRYPOINT ["./flacapi"]

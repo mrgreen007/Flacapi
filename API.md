@@ -104,6 +104,7 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 | `embed_metadata` | boolean | No | Embed ID3v2/Vorbis tags into the audio container. | `true`, `false` |
 | `embed_lyrics` | boolean | No | Fetch and embed synchronized LRC lyrics if available. | `true`, `false` |
 | `embed_max_quality_cover` | boolean | No | Download and embed high-resolution cover photo. | `true`, `false` |
+| `item_id` | string | No | Unique handle to distinctly track this specific download through asynchronous polling APIs. | Automatically generated if omitted. |
 
 > [!TIP]
 > **Smart API Enhancements Powered by the Flacapi Engine:**
@@ -118,7 +119,7 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 {
   "success": true,
   "message": "Downloaded from tidal-web",
-  "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a",
+  "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\downloads\\Arijit Singh - Tum Hi Ho.m4a",
   "actual_bit_depth": 16,
   "actual_sample_rate": 44100,
   "service": "tidal-web",
@@ -726,6 +727,11 @@ The FLAC API Server is highly configurable via standard System Environment Varia
 | `FLACAPI_EXTENSIONS_DIR` | string | `./extensions` | Path to the immutable extension packages (`.spotiflac-ext` zipped bundles). |
 | `FLACAPI_CONVERSION_STRATEGY` | string | `ORIGINAL` | Set to `ORIGINAL` to deliver raw native lossless formats (e.g. `.m4a`). Set to `FORCE_FLAC` to force internal FFmpeg conversion to `.flac` containers always. |
 | `FLACAPI_PROVIDER_PRIORITY` | list | *See Default* | Comma-separated string explicitly prioritizing extension traversal (e.g., `qobuz-web,apple-music`). |
+| `FLACAPI_AUTO_UPDATE_EXTENSIONS` | boolean | `true` | Enable or disable dynamic mirror synchronization on startup. Set to `false` to lock package versions. |
+| `FLACAPI_EXTENSION_STORE_URL` | string | (Public Repo) | Override the SpotiFLAC community repository URL with your own manual link or local file tree. |
+| `FLACAPI_APPLE_PROXY_KEY` | string | (Empty) | Custom authorized key for third-party premium Apple Music proxy nodes. |
+| `FLACAPI_TIDAL_MIRROR_URL` | string | (Empty) | Hard-override standard Tidal web scraper mirror with your own custom private endpoint URL. |
+| `FLACAPI_TIDAL_TOKEN` | string | (Empty) | Custom Tidal Public Client Token injected directly into backend scraping request streams. |
 
 #### **Standard Provider Baseline Sequence**
 If `FLACAPI_PROVIDER_PRIORITY` is not explicitly declared, the engine traverses loaded services in the following persistent hierarchy:
