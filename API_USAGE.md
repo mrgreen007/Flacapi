@@ -43,7 +43,7 @@ Query paginated artist tracks directly from the selected SpotiFLAC extension's m
     {
       "id": "12345678",
       "name": "Tum Hi Ho",
-      "artists": ["Arijit Singh"],
+      "artists": "Arijit Singh",
       "album_name": "Aashiqui 2",
       "album_artist": "Arijit Singh",
       "duration_ms": 262000,
@@ -75,6 +75,7 @@ The primary endpoint to search, resolve, and download audio tracks using native 
     "track_name": "Tum Hi Ho",
     "artist_name": "Arijit Singh",
     "album_name": "Aashiqui 2",
+    "isrc": "QM22L1901797",
     "output_dir": "./data/output",
     "output_ext": ".flac",
     "quality": "LOSSLESS",
@@ -93,15 +94,22 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 | `track_name` | string | Yes | The title of the track to search and download. | |
 | `artist_name` | string | Yes | The artist name of the track. | |
 | `album_name` | string | No | The album name to match against results. | |
+| `isrc` | string | No | Optional high-precision lookup key. Recommended for direct unique matches. | |
 | `output_dir` | string | No | Relative or absolute path where the final audio file will be saved. | Relative paths automatically resolve to server root. |
 | `output_ext` | string | No | Target extension for conversion. | `.flac`, `.m4a`, `.opus` |
-| `quality` | string | No | Target audio download quality. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS` |
+| `quality` | string | No | Target audio download quality. If set to `LOSSLESS`, the API explicitly filters out lossy providers from the fallback chain. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS` |
 | `use_extensions` | boolean | No | Enable the SpotiFLAC JS extension run-times. | `true`, `false` |
 | `service` | string | No | The specific extension provider to utilize. | `amazon`, `apple-music`, `deezer`, `pandora`, `qobuz-web`, `soundcloud`, `spotify-web`, `tidal-web`, `ytmusic-spotiflac` |
-| `use_fallback` | boolean | No | Enable automatic fallback to other active extensions if the chosen provider fails. Uses high-fidelity provider order by default without quality compromise. | `true`, `false` (default: `false`) |
+| `use_fallback` | boolean | No | Enable automatic fallback to other active extensions if the chosen provider fails. If `quality` is `LOSSLESS`, fallback is strictly restricted to lossless providers only. | `true`, `false` (default: `false`) |
 | `embed_metadata` | boolean | No | Embed ID3v2/Vorbis tags into the audio container. | `true`, `false` |
 | `embed_lyrics` | boolean | No | Fetch and embed synchronized LRC lyrics if available. | `true`, `false` |
 | `embed_max_quality_cover` | boolean | No | Download and embed high-resolution cover photo. | `true`, `false` |
+
+> [!TIP]
+> **Smart API Enhancements Powered by the Flacapi Engine:**
+> * **Auto-Resolve ISRC**: If you supply an `isrc` but omit track/artist names, the server instantly invokes the core metadata library to transparently resolve and populate the correct track details before beginning the download.
+> * **Safe Directory Routing**: If you omit `output_dir`, the server intelligently roots the operation into your globally configured server downloads directory instead of failing or creating stray local temp files.
+> * **Filename Sanitization**: The API layer proactively intercepts and scrubs illegal Windows filesystem tokens (like `< > : " / \ | ? *`) from your inputs, preventing fatal disk creation errors.
 
 #### **Success Response Format (Lossless ALAC/Tidal)**
 ```json
@@ -145,12 +153,13 @@ Retrieve the progress status of the currently active download.
 * **Response Format**:
   ```json
   {
-    "active": true,
+    "current_file": "12345",
     "progress": 45.5,
-    "speed": "2.4 MB/s",
-    "eta": "00:08",
-    "bytes_downloaded": 4781232,
-    "total_bytes": 10521883
+    "speed_mbps": 2.4,
+    "bytes_total": 10521883,
+    "bytes_received": 4781232,
+    "is_downloading": true,
+    "status": "downloading"
   }
   ```
 
@@ -160,14 +169,18 @@ Retrieve all active and completed download progresses in the system.
 * **Endpoint**: `GET /api/v1/download/progress/all`
 * **Response Format**:
   ```json
-  [
-    {
-      "id": "item-001",
-      "title": "Tum Hi Ho",
-      "status": "downloading",
-      "percent": 45.5
+  {
+    "items": {
+      "item-001": {
+        "item_id": "item-001",
+        "progress": 0.455,
+        "speed_mbps": 2.4,
+        "is_downloading": true,
+        "status": "downloading",
+        "bytes_total": 1000000
+      }
     }
-  ]
+  }
   ```
 
 ### Get Progress Delta (Polling)
@@ -266,18 +279,23 @@ Read tags and embedded cover art metadata from a downloaded file on disk.
 * **Request Payload**:
   ```json
   {
-    "file_path": "./data/output/Arijit Singh - Tum Hi Ho.m4a"
+    "filePath": "./data/output/Arijit Singh - Tum Hi Ho.m4a"
   }
   ```
 * **Response Format**:
   ```json
   {
-    "title": "Tum Hi Ho (From \"Aashiqui 2\")",
+    "title": "Tum Hi Ho",
     "artist": "Arijit Singh",
     "album": "Aashiqui 2",
-    "year": "2019",
-    "track_number": "1",
-    "has_cover": true
+    "album_artist": "Arijit Singh",
+    "date": "2019-12-29",
+    "track_number": 1,
+    "total_tracks": 10,
+    "disc_number": 1,
+    "isrc": "QM22L1901797",
+    "genre": "Bollywood",
+    "duration": 262
   }
   ```
 
@@ -382,8 +400,16 @@ Check if a track is available across platforms using its Spotify ID or ISRC code
 * **Response**:
   ```json
   {
-    "available": true,
-    "platforms": ["spotify", "tidal", "deezer"]
+    "spotify_id": "4pt7mS6v697u697",
+    "tidal": true,
+    "amazon": true,
+    "qobuz": false,
+    "deezer": true,
+    "youtube": true,
+    "tidal_id": "12345678",
+    "deezer_id": "87654321",
+    "tidal_url": "https://tidal.com/track/...",
+    "deezer_url": "https://deezer.com/track/..."
   }
   ```
 
@@ -439,9 +465,13 @@ Fetch raw metadata from any supported extension provider.
 * **Response**:
   ```json
   {
-    "title": "Tum Hi Ho",
-    "artist": "Arijit Singh",
-    "duration_ms": 262000
+    "track": {
+      "id": "12345678",
+      "name": "Tum Hi Ho",
+      "artists": "Arijit Singh",
+      "duration_ms": 262000,
+      "provider_id": "tidal-web"
+    }
   }
   ```
 
@@ -463,8 +493,8 @@ Check if a track has already been downloaded using its ISRC.
 * **Response**:
   ```json
   {
-    "duplicate": true,
-    "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a"
+    "exists": true,
+    "filepath": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a"
   }
   ```
 
@@ -484,7 +514,7 @@ Perform duplicate verification for a batch of tracks.
   [
     {
       "isrc": "QM22L1901797",
-      "duplicate": true,
+      "exists": true,
       "file_path": "./data/output/Arijit Singh - Tum Hi Ho.m4a"
     }
   ]
@@ -669,12 +699,13 @@ While the download strategy endpoint is actively running in Step 3, the client U
 * **Sample Response (During Download)**:
   ```json
   {
-    "active": true,
+    "current_file": "item-abc",
     "progress": 55.4,
-    "speed": "3.1 MB/s",
-    "eta": "00:06",
-    "bytes_downloaded": 5829103,
-    "total_bytes": 10521883
+    "speed_mbps": 3.1,
+    "is_downloading": true,
+    "status": "downloading",
+    "bytes_received": 5829103,
+    "bytes_total": 10521883
   }
   ```
 

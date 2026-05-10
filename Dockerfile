@@ -33,12 +33,13 @@ COPY --from=builder /app/bin/flacapi ./flacapi
 COPY --from=builder /app/extensions ./extensions
 
 # Create default directories and adjust permissions
-RUN mkdir -p /data /extensions && chown -R app:app /data /extensions /app
+RUN mkdir -p /data /downloads /extensions && chown -R app:app /data /downloads /extensions /app
 
 USER app
 EXPOSE 8080
 
 ENV FLACAPI_DATA_DIR=/data
+ENV FLACAPI_DOWNLOADS_DIR=/downloads
 ENV FLACAPI_EXTENSIONS_DIR=/app/extensions
 
 ENTRYPOINT ["./flacapi"]

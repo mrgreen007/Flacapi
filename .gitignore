@@ -10,6 +10,7 @@ bin/
 
 # Local data and cache
 data/
+downloads/
 
 # IDEs and Editors
 .vscode/
@@ -23,3 +24,5 @@ data/
 # OS specific
 .DS_Store
 Thumbs.db
+
+.env

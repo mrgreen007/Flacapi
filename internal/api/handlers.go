@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	gb "github.com/zarz/spotiflac_android/go_backend"
@@ -15,6 +16,9 @@ import (
 
 // DataDir is the primary root folder for app data and default relative path resolving.
 var DataDir = "./data"
+
+// DefaultDownloadDir is the active fallback directory for audio downloads if not specified by payload.
+var DefaultDownloadDir = "./data/output"
 
 // AdditionalAllowedDirs stores extra paths (like separate mounted downloads volume) to permit access.
 var AdditionalAllowedDirs []string
@@ -91,20 +95,98 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		reqStr = string(bodyBytes)
 	}
 
-	// Resolve relative output_dir to absolute path to guarantee consistent folder output across all JS extensions
+	// Ensure safe default output_dir and resolve to absolute path for JS extension parity
 	var reqMap map[string]interface{}
 	if mapUnmarshalErr := json.Unmarshal([]byte(reqStr), &reqMap); mapUnmarshalErr == nil {
-		if outDir, ok := reqMap["output_dir"].(string); ok && outDir != "" {
-			if absOutDir, absPathErr := filepath.Abs(outDir); absPathErr == nil {
-				reqMap["output_dir"] = absOutDir
-				if updatedBytes, marshalErr := json.Marshal(reqMap); marshalErr == nil {
-					reqStr = string(updatedBytes)
-				}
+		outDir, _ := reqMap["output_dir"].(string)
+		outDir = strings.TrimSpace(outDir)
+		if outDir == "" {
+			outDir = DefaultDownloadDir
+		}
+		if absOutDir, absPathErr := filepath.Abs(outDir); absPathErr == nil {
+			reqMap["output_dir"] = absOutDir
+			if updatedBytes, marshalErr := json.Marshal(reqMap); marshalErr == nil {
+				reqStr = string(updatedBytes)
 			}
 		}
 	}
+	var result string
 
-	result, err := gb.DownloadByStrategy(reqStr)
+	// Re-ensure map for access safety if previous unmarshal didn't populate it
+	if reqMap == nil {
+		_ = json.Unmarshal([]byte(reqStr), &reqMap)
+	}
+
+	// Premium Enhancement: Transparently resolve missing metadata names from ISRC before downloader proceeds
+	enrichRequestMetadataFromISRC(reqMap)
+	if reqMap != nil {
+		// Safety Upgrade: Scrub all user-supplied inputs to strip unsafe characters before backend dispatch
+		fieldsToScrub := []string{"track_name", "artist_name", "album_name"}
+		for _, f := range fieldsToScrub {
+			if val, ok := reqMap[f].(string); ok && strings.TrimSpace(val) != "" {
+				reqMap[f] = sanitizeMetadataString(val)
+			}
+		}
+		// Persist back to string state to guarantee subsequent backend invocations use the cleaned object
+		if updatedBytes, marshalErr := json.Marshal(reqMap); marshalErr == nil {
+			reqStr = string(updatedBytes)
+		}
+	}
+
+	quality, _ := reqMap["quality"].(string)
+	useFallback, _ := reqMap["use_fallback"].(bool)
+	requestedService, _ := reqMap["service"].(string)
+
+	if strings.ToUpper(strings.TrimSpace(quality)) == "LOSSLESS" && useFallback && reqMap != nil {
+		providers, pErr := getFilteredLosslessPriority(requestedService)
+		if pErr == nil && len(providers) > 0 {
+			reqMap["use_fallback"] = false // Set to false so go_backend doesn't perform inherent fallback loop
+			
+			var lastResult string
+			var lastErr error
+			successFound := false
+
+			for _, provider := range providers {
+				reqMap["service"] = provider
+				updatedBytes, marshalErr := json.Marshal(reqMap)
+				if marshalErr != nil {
+					continue
+				}
+				
+				loopResult, loopErr := gb.DownloadByStrategy(string(updatedBytes))
+				lastResult = loopResult
+				lastErr = loopErr
+
+				if loopErr == nil {
+					var rMap map[string]interface{}
+					if json.Unmarshal([]byte(loopResult), &rMap) == nil {
+						if succ, _ := rMap["success"].(bool); succ {
+							result = loopResult
+							err = nil
+							successFound = true
+							break
+						}
+					}
+				}
+			}
+
+			if !successFound {
+				result = lastResult
+				err = lastErr
+				// Guarantee structured response if empty
+				if result == "" && err == nil {
+					result = `{"success":false, "error":"All lossless providers failed to resolve this track", "error_type":"not_found"}`
+				}
+			}
+		} else {
+			// Fallback retrieval failed, invoke default logic to avoid blocking client completely
+			result, err = gb.DownloadByStrategy(reqStr)
+		}
+	} else {
+		// Ordinary request path (Lossy quality OR explicit no-fallback manual request)
+		result, err = gb.DownloadByStrategy(reqStr)
+	}
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -494,11 +576,15 @@ func HandleCheckDuplicate(w http.ResponseWriter, r *http.Request) {
 		OutputDir string `json:"outputDir"`
 		ISRC      string `json:"isrc"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OutputDir == "" || req.ISRC == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"outputDir and isrc are required"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ISRC == "" {
+		http.Error(w, `{"error":"Invalid JSON", "message":"isrc is required"}`, http.StatusBadRequest)
 		return
 	}
-	safeOutputDir, err := SafePath(req.OutputDir)
+	targetDir := strings.TrimSpace(req.OutputDir)
+	if targetDir == "" {
+		targetDir = DefaultDownloadDir
+	}
+	safeOutputDir, err := SafePath(targetDir)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
 		return
@@ -518,11 +604,15 @@ func HandleCheckDuplicatesBatch(w http.ResponseWriter, r *http.Request) {
 		OutputDir  string          `json:"outputDir"`
 		TracksJSON json.RawMessage `json:"tracksJSON"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OutputDir == "" || len(req.TracksJSON) == 0 {
-		http.Error(w, `{"error":"Invalid JSON", "message":"outputDir and tracksJSON are required"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.TracksJSON) == 0 {
+		http.Error(w, `{"error":"Invalid JSON", "message":"tracksJSON is required"}`, http.StatusBadRequest)
 		return
 	}
-	safeOutputDir, err := SafePath(req.OutputDir)
+	targetDir := strings.TrimSpace(req.OutputDir)
+	if targetDir == "" {
+		targetDir = DefaultDownloadDir
+	}
+	safeOutputDir, err := SafePath(targetDir)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
 		return
@@ -593,3 +683,121 @@ func HandleParseCueSheet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(result))
 }
+
+func getLosslessExtensionIDs() (map[string]bool, error) {
+	installedJSON, err := gb.GetInstalledExtensions()
+	if err != nil {
+		return nil, err
+	}
+	type minimalExtInfo struct {
+		ID           string `json:"id"`
+		Capabilities struct {
+			DownloadFallbackTier string `json:"downloadFallbackTier"`
+		} `json:"capabilities"`
+	}
+	var list []minimalExtInfo
+	if err := json.Unmarshal([]byte(installedJSON), &list); err != nil {
+		return nil, err
+	}
+	losslessMap := make(map[string]bool)
+	for _, item := range list {
+		tier := strings.ToLower(strings.TrimSpace(item.Capabilities.DownloadFallbackTier))
+		if tier == "lossless" || tier == "hi_res" {
+			losslessMap[item.ID] = true
+		}
+	}
+	return losslessMap, nil
+}
+
+func getFilteredLosslessPriority(requestedService string) ([]string, error) {
+	priorityJSON, err := gb.GetProviderPriorityJSON()
+	if err != nil {
+		return nil, err
+	}
+	var priority []string
+	if err = json.Unmarshal([]byte(priorityJSON), &priority); err != nil {
+		return nil, err
+	}
+
+	losslessMap, err := getLosslessExtensionIDs()
+	if err != nil {
+		return nil, err
+	}
+
+	var filtered []string
+	seen := make(map[string]bool)
+
+	requestedService = strings.TrimSpace(requestedService)
+	if requestedService != "" && losslessMap[requestedService] {
+		filtered = append(filtered, requestedService)
+		seen[requestedService] = true
+	}
+
+	for _, p := range priority {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		if losslessMap[p] {
+			filtered = append(filtered, p)
+			seen[p] = true
+		}
+	}
+	return filtered, nil
+}
+
+// enrichRequestMetadataFromISRC invokes metadata lookup to resolve missing names before download begins.
+func enrichRequestMetadataFromISRC(reqMap map[string]interface{}) {
+	if reqMap == nil {
+		return
+	}
+	isrc, _ := reqMap["isrc"].(string)
+	isrc = strings.TrimSpace(isrc)
+	if isrc == "" {
+		return
+	}
+
+	tName, _ := reqMap["track_name"].(string)
+	aName, _ := reqMap["artist_name"].(string)
+
+	// Only lookup if fundamental fields are totally missing
+	if strings.TrimSpace(tName) != "" && strings.TrimSpace(aName) != "" {
+		return 
+	}
+
+	rawMeta, err := gb.SearchDeezerByISRC(isrc)
+	if err != nil {
+		return // Silent fallback
+	}
+
+	var meta map[string]interface{}
+	if err := json.Unmarshal([]byte(rawMeta), &meta); err != nil {
+		return
+	}
+
+	if strings.TrimSpace(tName) == "" {
+		if val, ok := meta["name"].(string); ok && strings.TrimSpace(val) != "" {
+			reqMap["track_name"] = sanitizeMetadataString(val)
+		}
+	}
+	if strings.TrimSpace(aName) == "" {
+		if val, ok := meta["artists"].(string); ok && strings.TrimSpace(val) != "" {
+			reqMap["artist_name"] = sanitizeMetadataString(val)
+		}
+	}
+	albName, _ := reqMap["album_name"].(string)
+	if strings.TrimSpace(albName) == "" {
+		if val, ok := meta["album_name"].(string); ok && strings.TrimSpace(val) != "" {
+			reqMap["album_name"] = sanitizeMetadataString(val)
+		}
+	}
+}
+
+var winIllegalFilenameChars = regexp.MustCompile(`[<>:"/\\|?*]`)
+
+// sanitizeMetadataString strictly removes unsafe Windows path tokens to prevent system disk write exceptions.
+func sanitizeMetadataString(s string) string {
+	cleaned := winIllegalFilenameChars.ReplaceAllString(s, " ")
+	return strings.Join(strings.Fields(cleaned), " ")
+}
+

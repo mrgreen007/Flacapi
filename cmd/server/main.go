@@ -19,7 +19,34 @@ import (
 	go_backend "github.com/zarz/spotiflac_android/go_backend"
 )
 
+func loadDotEnv() {
+	content, err := os.ReadFile(".env")
+	if err != nil {
+		return // Quiet if not found
+	}
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			// Preserve potential quotes around values
+			val = strings.Trim(val, `"'`)
+			if os.Getenv(key) == "" { // Don't override already set shell vars
+				os.Setenv(key, val)
+			}
+		}
+	}
+}
+
 func main() {
+	// First load local definitions from file if running outside runtime containers
+	loadDotEnv()
+
 	// Retrieve paths from environment or use defaults
 	dataDir := os.Getenv("FLACAPI_DATA_DIR")
 	if dataDir == "" {
@@ -91,6 +118,8 @@ func main() {
 		go_backend.AllowDownloadDir(absDownloadsDir)
 	}
 
+	api.DefaultDownloadDir = defaultDownloadPath
+
 	if err := go_backend.SetDownloadDirectory(defaultDownloadPath); err != nil {
 		log.Printf("Warning: Failed to set default download directory: %v", err)
 	}
@@ -115,8 +144,8 @@ func main() {
 			}
 
 			// Configure default fallback priorities to support automatic multi-provider lossless downloads (e.g. from Spotify metadata bootstrap)
-			_ = go_backend.SetProviderPriorityJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "ytmusic-spotiflac", "amazon", "soundcloud", "pandora"]`)
-			_ = go_backend.SetExtensionFallbackProviderIDsJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "ytmusic-spotiflac", "amazon", "soundcloud", "pandora"]`)
+			_ = go_backend.SetProviderPriorityJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "amazon", "ytmusic-spotiflac", "soundcloud", "pandora"]`)
+			_ = go_backend.SetExtensionFallbackProviderIDsJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "amazon", "ytmusic-spotiflac", "soundcloud", "pandora"]`)
 		}
 	}
 
@@ -192,8 +221,8 @@ func main() {
 	srv := &http.Server{
 		Addr:         ":8080",
 		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  15 * time.Minute,
+		WriteTimeout: 15 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
