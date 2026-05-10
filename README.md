@@ -140,3 +140,9 @@ To run the linters locally:
    golangci-lint run
    ```
    *Note: This automatically picks up our `.golangci.yml` rules and safely ignores the vendored `internal/go_backend` directory.*
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
