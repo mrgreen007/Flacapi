@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,11 +15,17 @@ import (
 	gb "github.com/zarz/spotiflac_android/go_backend"
 )
 
+const qualityLossless = "LOSSLESS"
+
 // DataDir is the primary root folder for app data and default relative path resolving.
 var DataDir = "./data"
 
 // DefaultDownloadDir is the active fallback directory for audio downloads if not specified by payload.
-var DefaultDownloadDir = "./data/output"
+var DefaultDownloadDir = "./downloads"
+
+// ConversionStrategy dictates handling of containers returned by the backend.
+// Accepted values: "ORIGINAL" (default, preserves native extensions like .m4a), "FORCE_FLAC".
+var ConversionStrategy = "ORIGINAL"
 
 // AdditionalAllowedDirs stores extra paths (like separate mounted downloads volume) to permit access.
 var AdditionalAllowedDirs []string
@@ -95,8 +102,8 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		reqStr = string(bodyBytes)
 	}
 
-	// Ensure safe default output_dir and resolve to absolute path for JS extension parity
 	var reqMap map[string]interface{}
+	var finalTargetDir string
 	if mapUnmarshalErr := json.Unmarshal([]byte(reqStr), &reqMap); mapUnmarshalErr == nil {
 		outDir, _ := reqMap["output_dir"].(string)
 		outDir = strings.TrimSpace(outDir)
@@ -104,10 +111,18 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 			outDir = DefaultDownloadDir
 		}
 		if absOutDir, absPathErr := filepath.Abs(outDir); absPathErr == nil {
-			reqMap["output_dir"] = absOutDir
-			if updatedBytes, marshalErr := json.Marshal(reqMap); marshalErr == nil {
-				reqStr = string(updatedBytes)
-			}
+			finalTargetDir = absOutDir // Retain final physical destination reference
+		} else {
+			finalTargetDir = outDir
+		}
+
+		// Redirect current transactional load into hidden local staging reservoir
+		stagingDir := filepath.Join(DataDir, "staging")
+		_ = os.MkdirAll(stagingDir, 0755)
+		reqMap["output_dir"] = stagingDir
+
+		if updatedBytes, marshalErr := json.Marshal(reqMap); marshalErr == nil {
+			reqStr = string(updatedBytes)
 		}
 	}
 	var result string
@@ -119,7 +134,21 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 
 	// Premium Enhancement: Transparently resolve missing metadata names from ISRC before downloader proceeds
 	enrichRequestMetadataFromISRC(reqMap)
+
 	if reqMap != nil {
+		// Smart Defaults: Ensure maximum features & reliable provider chaining is enabled by default
+		booleanDefaults := []string{"embed_metadata", "embed_max_quality_cover", "embed_lyrics", "use_fallback"}
+		for _, key := range booleanDefaults {
+			if _, exists := reqMap[key]; !exists {
+				reqMap[key] = true
+			}
+		}
+
+		// Mandate LOSSLESS resolution default to force strict non-cascading retrievals
+		if q, exists := reqMap["quality"]; !exists || strings.TrimSpace(fmt.Sprintf("%v", q)) == "" {
+			reqMap["quality"] = qualityLossless
+		}
+
 		// Safety Upgrade: Scrub all user-supplied inputs to strip unsafe characters before backend dispatch
 		fieldsToScrub := []string{"track_name", "artist_name", "album_name"}
 		for _, f := range fieldsToScrub {
@@ -137,11 +166,11 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	useFallback, _ := reqMap["use_fallback"].(bool)
 	requestedService, _ := reqMap["service"].(string)
 
-	if strings.ToUpper(strings.TrimSpace(quality)) == "LOSSLESS" && useFallback && reqMap != nil {
+	if strings.ToUpper(strings.TrimSpace(quality)) == qualityLossless && useFallback && reqMap != nil {
 		providers, pErr := getFilteredLosslessPriority(requestedService)
 		if pErr == nil && len(providers) > 0 {
 			reqMap["use_fallback"] = false // Set to false so go_backend doesn't perform inherent fallback loop
-			
+
 			var lastResult string
 			var lastErr error
 			successFound := false
@@ -152,7 +181,7 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 				if marshalErr != nil {
 					continue
 				}
-				
+
 				loopResult, loopErr := gb.DownloadByStrategy(string(updatedBytes))
 				lastResult = loopResult
 				lastErr = loopErr
@@ -161,10 +190,18 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 					var rMap map[string]interface{}
 					if json.Unmarshal([]byte(loopResult), &rMap) == nil {
 						if succ, _ := rMap["success"].(bool); succ {
-							result = loopResult
-							err = nil
-							successFound = true
-							break
+							filePath, _ := rMap["file_path"].(string)
+							// Strict validation: probe content stream to verify genuine codec fidelity
+							if isLosslessCodec(filePath) {
+								result = loopResult
+								err = nil
+								successFound = true
+								break
+							} else {
+								// Purge failure and attempt transparent bridge onto alternative source
+								_ = os.Remove(filePath)
+								log.Printf("Provider %s delivered lossy container; transparently seeking fallback...", provider)
+							}
 						}
 					}
 				}
@@ -197,40 +234,137 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	if json.Unmarshal([]byte(result), &respMap) == nil {
 		success, _ := respMap["success"].(bool)
 		filePath, _ := respMap["file_path"].(string)
-		coverURL, _ := respMap["cover_url"].(string)
-		if success && filePath != "" && strings.HasSuffix(strings.ToLower(filePath), ".m4a") {
-			targetFlacPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".flac"
-			cmd := exec.Command("ffmpeg", "-i", filePath, "-c:a", "flac", "-y", targetFlacPath)
-			if transcodeErr := cmd.Run(); transcodeErr == nil {
+
+		// ATOMIC QUALITY SENTINEL: Catch-all safety gate protecting delivery from ANY secret codec downgrades.
+		if success && strings.ToUpper(strings.TrimSpace(quality)) == qualityLossless && filePath != "" {
+			if !isLosslessCodec(filePath) {
+				// Hard Rejection: The delivered container violates strict lossless policy.
 				_ = os.Remove(filePath)
+				log.Printf("ATOMIC REJECT: Finalizer discovered lossy payload leaked to disk (%s). Nuking delivery.", filePath)
 
-				// Programmatically download and natively embed the cover art as an attached picture in the FLAC metadata
-				if coverURL != "" {
-					if httpResp, httpErr := http.Get(coverURL); httpErr == nil && httpResp.StatusCode == http.StatusOK {
-						tempCoverPath := targetFlacPath + ".cover.jpg"
-						if coverFile, createErr := os.Create(tempCoverPath); createErr == nil {
-							_, _ = io.Copy(coverFile, httpResp.Body)
-							_ = coverFile.Close()
-							_ = httpResp.Body.Close()
-
-							tempFlacPath := targetFlacPath + ".temp.flac"
-							embedCmd := exec.Command("ffmpeg", "-i", targetFlacPath, "-i", tempCoverPath, "-map", "0:a", "-map", "1:v", "-c:a", "copy", "-c:v", "copy", "-disposition:v", "attached_pic", "-y", tempFlacPath)
-							if embedErr := embedCmd.Run(); embedErr == nil {
-								_ = os.Remove(targetFlacPath)
-								_ = os.Rename(tempFlacPath, targetFlacPath)
-							}
-							_ = os.Remove(tempCoverPath)
-						}
-					}
+				respMap["success"] = false
+				respMap["error"] = "Provided stream failed final lossless assertion test; provider downgraded format internally."
+				respMap["error_type"] = "quality_rejected"
+				if updatedBytes, mErr := json.Marshal(respMap); mErr == nil {
+					result = string(updatedBytes)
 				}
+				success = false // Decouple follow-up finalizers
+			}
+		}
 
-				respMap["file_path"] = targetFlacPath
-				respMap["requires_container_conversion"] = false
+		coverURL, _ := respMap["cover_url"].(string)
+		finalFilePath := filePath
+		needsUpdate := false
+
+		// 1. CONDITIONAL TRANSCODE: Convert M4A to FLAC if user requested FORCE_FLAC behavior
+		if success && finalFilePath != "" && strings.HasSuffix(strings.ToLower(finalFilePath), ".m4a") && strings.ToUpper(ConversionStrategy) != "ORIGINAL" {
+			targetFlacPath := strings.TrimSuffix(finalFilePath, filepath.Ext(finalFilePath)) + ".flac"
+			cmd := exec.Command("ffmpeg", "-i", finalFilePath, "-c:a", "flac", "-y", targetFlacPath)
+			if cmd.Run() == nil {
+				_ = os.Remove(finalFilePath)
+				finalFilePath = targetFlacPath
+				respMap["file_path"] = finalFilePath
 				respMap["actual_extension"] = ".flac"
 				respMap["actual_container"] = "FLAC"
-				if updatedResultBytes, marshalErr := json.Marshal(respMap); marshalErr == nil {
-					result = string(updatedResultBytes)
+				respMap["requires_container_conversion"] = false
+				needsUpdate = true
+			}
+		}
+
+		// 2. UNIFIED METADATA & COVER INJECTION: Standardizes delivery tagging schema across any format
+		if success && finalFilePath != "" {
+			fileExt := filepath.Ext(finalFilePath)
+			tempOutPath := finalFilePath + ".temp_final" + fileExt
+
+			baseArgs := []string{"-i", finalFilePath}
+			hasCover := false
+			tempCoverPath := finalFilePath + ".cover.jpg"
+
+			if coverURL != "" {
+				if httpResp, httpErr := http.Get(coverURL); httpErr == nil && httpResp.StatusCode == http.StatusOK {
+					if coverFile, createErr := os.Create(tempCoverPath); createErr == nil {
+						_, _ = io.Copy(coverFile, httpResp.Body)
+						_ = coverFile.Close()
+						_ = httpResp.Body.Close()
+						baseArgs = append(baseArgs, "-i", tempCoverPath)
+						hasCover = true
+					}
 				}
+			}
+
+			// Construct safe stream mappings: Strip existing secondary track pollution
+			baseArgs = append(baseArgs, "-map", "0:a")
+			if hasCover {
+				baseArgs = append(baseArgs, "-map", "1:v", "-disposition:v", "attached_pic")
+			}
+			baseArgs = append(baseArgs, "-c:a", "copy", "-c:v", "copy")
+
+			// Extrapolate all logical tags residing inside result construct
+			addMeta := func(ffmpegKey, resKey string) {
+				if val, ok := respMap[resKey].(string); ok && strings.TrimSpace(val) != "" {
+					baseArgs = append(baseArgs, "-metadata", fmt.Sprintf("%s=%s", ffmpegKey, val))
+				}
+			}
+			addMetaNum := func(ffmpegKey, resKey string) {
+				if val, ok := respMap[resKey].(float64); ok && val > 0 {
+					baseArgs = append(baseArgs, "-metadata", fmt.Sprintf("%s=%d", ffmpegKey, int(val)))
+				}
+			}
+
+			addMeta("title", "title")
+			addMeta("artist", "artist")
+			addMeta("album", "album")
+			addMeta("album_artist", "album_artist")
+			addMeta("date", "release_date")
+			addMeta("genre", "genre")
+			addMeta("copyright", "copyright")
+			addMeta("composer", "composer")
+			addMeta("comment", "isrc") // Ubiquitous lookup location for custom player identification
+			addMetaNum("track", "track_number")
+			addMetaNum("disc", "disc_number")
+
+			baseArgs = append(baseArgs, "-y", tempOutPath)
+
+			embedCmd := exec.Command("ffmpeg", baseArgs...)
+			if embedCmd.Run() == nil {
+				_ = os.Remove(finalFilePath)
+				_ = os.Rename(tempOutPath, finalFilePath)
+			} else {
+				_ = os.Remove(tempOutPath) // Safe restoration state cleanup
+			}
+
+			if hasCover {
+				_ = os.Remove(tempCoverPath)
+			}
+		}
+
+		// 3. ATOMIC DELIVERY HANDOFF: Relocate fully finalized verified payload from staging to actual target directory
+		if success && finalFilePath != "" && finalTargetDir != "" {
+			stagingParent := filepath.Dir(finalFilePath)
+			if stagingParent != finalTargetDir {
+				_ = os.MkdirAll(finalTargetDir, 0755)
+				baseName := filepath.Base(finalFilePath)
+				absoluteDest := filepath.Join(finalTargetDir, baseName)
+
+				// High efficiency atomic rename shipment
+				if err := os.Rename(finalFilePath, absoluteDest); err == nil {
+					respMap["file_path"] = absoluteDest
+					needsUpdate = true
+				} else {
+					// Fallback strategy for cross-volume delivery (e.g. moving between distinct drives C: -> D:)
+					if copyErr := safeStreamCopy(finalFilePath, absoluteDest); copyErr == nil {
+						_ = os.Remove(finalFilePath)
+						respMap["file_path"] = absoluteDest
+						needsUpdate = true
+					}
+				}
+			}
+		}
+
+		// Re-serialize final definitive object map back to wire-string output
+		if needsUpdate {
+			if updatedResultBytes, marshalErr := json.Marshal(respMap); marshalErr == nil {
+				result = string(updatedResultBytes)
 			}
 		}
 	}
@@ -762,7 +896,7 @@ func enrichRequestMetadataFromISRC(reqMap map[string]interface{}) {
 
 	// Only lookup if fundamental fields are totally missing
 	if strings.TrimSpace(tName) != "" && strings.TrimSpace(aName) != "" {
-		return 
+		return
 	}
 
 	rawMeta, err := gb.SearchDeezerByISRC(isrc)
@@ -801,3 +935,37 @@ func sanitizeMetadataString(s string) string {
 	return strings.Join(strings.Fields(cleaned), " ")
 }
 
+// isLosslessCodec definitively probes filesystem packets to assert true lossless delivery.
+func isLosslessCodec(filePath string) bool {
+	if filePath == "" {
+		return false
+	}
+
+	// Probe atomic data stream using core FFprobe binaries
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return false // Safe denial of unknown container integrity
+	}
+
+	codec := strings.TrimSpace(strings.ToLower(string(output)))
+
+	// Registered canonical lossless standard formats
+	return codec == "flac" || codec == "alac" || codec == "wav" || codec == "aiff" || strings.Contains(codec, "pcm")
+}
+
+
+func safeStreamCopy(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}

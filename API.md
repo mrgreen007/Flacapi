@@ -91,10 +91,10 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 
 | Field | Type | Required | Description | Default / Allowed Values |
 | :--- | :--- | :--- | :--- | :--- |
-| `track_name` | string | Yes | The title of the track to search and download. | |
-| `artist_name` | string | Yes | The artist name of the track. | |
+| `track_name` | string | Conditional* | The title of the track to search and download. | Optional ONLY if `isrc` supplied. |
+| `artist_name` | string | Conditional* | The artist name of the track. | Optional ONLY if `isrc` supplied. |
 | `album_name` | string | No | The album name to match against results. | |
-| `isrc` | string | No | Optional high-precision lookup key. Recommended for direct unique matches. | |
+| `isrc` | string | No | Optional high-precision unique lookup key. If supplied, names become optional. | |
 | `output_dir` | string | No | Relative or absolute path where the final audio file will be saved. | Relative paths automatically resolve to server root. |
 | `output_ext` | string | No | Target extension for conversion. | `.flac`, `.m4a`, `.opus` |
 | `quality` | string | No | Target audio download quality. If set to `LOSSLESS`, the API explicitly filters out lossy providers from the fallback chain. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS` |
@@ -110,6 +110,8 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 > * **Auto-Resolve ISRC**: If you supply an `isrc` but omit track/artist names, the server instantly invokes the core metadata library to transparently resolve and populate the correct track details before beginning the download.
 > * **Safe Directory Routing**: If you omit `output_dir`, the server intelligently roots the operation into your globally configured server downloads directory instead of failing or creating stray local temp files.
 > * **Filename Sanitization**: The API layer proactively intercepts and scrubs illegal Windows filesystem tokens (like `< > : " / \ | ? *`) from your inputs, preventing fatal disk creation errors.
+> * **Atomic Quality Sentinel**: When requesting `LOSSLESS` quality, the engine performs deep packet interrogation post-download. If a proxy server emits a secret codec downgrade (e.g. delivers lossy AAC hidden in a FLAC container), the engine intercepts, nukes the corrupt payload automatically, and invokes an immediate cascade recovery to an alternative provider transparently without alerting the client.
+> * **Zero-Maintenance Dynamic Refreshes**: Upon startup, the server establishes real-time link-state parity with the community-managed GitHub Extension Registry, syncing the latest runtime tokens and delivery mirrors automatically so you never have to adjust your configuration files manually to chase provider patches.
 
 #### **Success Response Format (Lossless ALAC/Tidal)**
 ```json
@@ -632,100 +634,106 @@ curl -X POST http://localhost:8080/api/v1/download/strategy \
 
 ## 🏁 10. Example API Call Flow
 
-This walkthrough demonstrates the step-by-step sequence of API calls to search, download, track, and locate a premium lossless song using the FLAC API Service.
+Here is a comprehensive blueprint of a standard end-to-end interactive UI lifecycle using the Flacapi interface:
 
-### Step 1: Artist Track Search & Pagination (Client UI)
-First, the client queries our newly exposed extension search API to search for an artist's tracks directly from Tidal/Deezer:
+### Step 1: Ensure Server Readiness
+The client initializes by verifying connectivity to the active server and auditing existing system boundaries:
+* **Request**: `GET http://localhost:8080/health` (or similar baseline GET ping)
+* **Pre-Flight Check**: Verify absolute environment routing settings via `POST /api/v1/config/download-dir`.
 
+### Step 2: Discover Song via Direct Search
+A user enters **"Arijit Singh"** into your interface search bar. The client triggers a provider lookup to gather accurate results:
 * **Request**: `POST http://localhost:8080/api/v1/search`
 * **Payload**:
   ```json
   {
-    "service": "tidal-web",
-    "query": "Arijit Singh",
+    "service": "apple-music",
+    "query": "Arijit",
     "options": {
       "type": "track"
     }
   }
   ```
-* **Response**:
-  ```json
-  [
-    {
-      "id": "12345678",
-      "name": "Tum Hi Ho",
-      "artists": ["Arijit Singh"],
-      "album_name": "Aashiqui 2",
-      "duration_ms": 262000
-    },
-    {
-      "id": "87654321",
-      "name": "Channa Mereya",
-      "artists": ["Arijit Singh"],
-      "album_name": "Ae Dil Hai Mushkil",
-      "duration_ms": 289000
-    }
-  ]
-  ```
+* **Discovery**: The search returns detailed track object lists. The client extracts the target's unique persistent identifier (**ISRC: `"QM22L1901797"`**) from the list results.
 
-### Step 2: User Picks a Track
-The user selects a track from the paginated list (for example, **"Tum Hi Ho"**). The client extracts the precise metadata fields (`track_name`, `artist_name`, `album_name`) to prepare the download payload.
-
-### Step 3: Dispatch Lossless Download Request
-The client sends the precise track metadata to the FLAC API, requesting the maximum quality setting (**`LOSSLESS`**) via the Tidal extension to download the studio-master audio:
-
-* **Request**: `POST http://localhost:8080/api/v1/download/strategy`
-* **Request Headers**: `Content-Type: application/json`
+### Step 3: Check Catalog Availability (Using ISRC Only)
+Before starting, the client queries the aggregator engine using ONLY the ISRC to confirm licensing availability across lossless networks:
+* **Request**: `POST http://localhost:8080/api/v1/catalog/availability`
 * **Payload**:
   ```json
   {
-    "track_name": "Tum Hi Ho",
-    "artist_name": "Arijit Singh",
-    "album_name": "Aashiqui 2",
-    "output_dir": "./data/output",
-    "output_ext": ".flac",
+    "isrc": "QM22L1901797"
+  }
+  ```
+* **Analysis**: The engine confirms the ISRC is fully active and playable on `tidal: true` and `amazon: true`.
+
+### Step 4: Dispatch Master Quality Download (Smart ISRC Route)
+The client initiates the download. Crucially, **zero track names or manual output paths need to be provided**, letting our smart layer perform dynamic hydration and environment fallback:
+* **Request**: `POST http://localhost:8080/api/v1/download/strategy`
+* **Payload**:
+  ```json
+  {
+    "isrc": "QM22L1901797",
     "quality": "LOSSLESS",
-    "use_extensions": true,
-    "service": "tidal-web",
-    "embed_metadata": true,
-    "embed_max_quality_cover": true
+    "use_extensions": true
   }
   ```
 
-### Step 4: Track Real-Time Progress (Background Thread Polling)
-While the download strategy endpoint is actively running in Step 3, the client UI starts a background polling thread to fetch real-time download status, percentages, speed, and ETA to display a progress bar to the user:
-
+### Step 5: Track Live Speed & Download Percents
+While Step 4's connection is active, a separate UI thread begins high-frequency background polling to hydrate your dynamic interface views:
 * **Request**: `GET http://localhost:8080/api/v1/download/progress`
-* **Sample Response (During Download)**:
+* **Sample Poll Return**:
   ```json
   {
     "current_file": "item-abc",
-    "progress": 55.4,
-    "speed_mbps": 3.1,
+    "progress": 72.8,
+    "speed_mbps": 5.4,
     "is_downloading": true,
     "status": "downloading",
-    "bytes_received": 5829103,
-    "bytes_total": 10521883
+    "bytes_received": 7500221,
+    "bytes_total": 10300000
   }
   ```
 
-### Step 5: Final Success Response & File Retrieval
-Once the download is completed, the download strategy request (Step 3) completes successfully and returns the final metadata along with the absolute local file path:
-
-* **Response**:
+### Step 6: Final Handshake & Clean Retrieval
+Once downloading finishes, the primary Request context from **Step 4** resolves and releases the definitive success bundle:
+* **Primary Final Response**:
   ```json
   {
     "success": true,
     "message": "Downloaded from tidal-web",
-    "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a",
+    "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\downloads\\Arijit Singh - Tum Hi Ho.flac",
     "actual_bit_depth": 16,
     "actual_sample_rate": 44100,
     "service": "tidal-web",
-    "title": "Tum Hi Ho (From \"Aashiqui 2\")",
+    "title": "Tum Hi Ho",
     "artist": "Arijit Singh",
-    "album": "Aashiqui 2",
-    "cover_url": "https://resources.tidal.com/images/16bd0ffc/1681/4568/919c/9dc4ba55176f/1280x1280.jpg"
+    "cover_url": "https://resources.tidal.com/images/..."
   }
   ```
-* **Locating the File**: The client can now play the 100% CD-Quality Lossless ALAC file (`Arijit Singh - Tum Hi Ho.m4a`) from `./data/output/` on disk!
+* **Victory State**: The file is saved flawlessly to the environmentally-provided `/downloads` folder. The client may now render the play-button to the end-user!
 
+---
+
+## 11. System Administration & Environment Configuration
+
+The FLAC API Server is highly configurable via standard System Environment Variables. You can define these in a local `.env` file in the server root or export them directly in your Docker container stack.
+
+| Environment Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `FLACAPI_DATA_DIR` | string | `./data` | The core path where the SQLite catalog, server cache, and runtime extension environments are mounted. |
+| `FLACAPI_DOWNLOADS_DIR` | string | `./downloads` | The canonical public output folder. All downloaded audio is saved here automatically unless an absolute alternative is sent via API payload. |
+| `FLACAPI_EXTENSIONS_DIR` | string | `./extensions` | Path to the immutable extension packages (`.spotiflac-ext` zipped bundles). |
+| `FLACAPI_CONVERSION_STRATEGY` | string | `ORIGINAL` | Set to `ORIGINAL` to deliver raw native lossless formats (e.g. `.m4a`). Set to `FORCE_FLAC` to force internal FFmpeg conversion to `.flac` containers always. |
+| `FLACAPI_PROVIDER_PRIORITY` | list | *See Default* | Comma-separated string explicitly prioritizing extension traversal (e.g., `qobuz-web,apple-music`). |
+
+#### **Standard Provider Baseline Sequence**
+If `FLACAPI_PROVIDER_PRIORITY` is not explicitly declared, the engine traverses loaded services in the following persistent hierarchy:
+1. `apple-music`
+2. `tidal-web`
+3. `qobuz-web`
+4. `deezer`
+5. `amazon`
+6. `ytmusic-spotiflac`
+7. `soundcloud`
+8. `pandora`

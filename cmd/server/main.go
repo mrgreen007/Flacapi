@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -15,8 +16,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/gorilla/handlers"
 
-	"sabuj.in/flacapi/internal/api"
 	go_backend "github.com/zarz/spotiflac_android/go_backend"
+	"sabuj.in/flacapi/internal/api"
 )
 
 func loadDotEnv() {
@@ -109,6 +110,9 @@ func main() {
 	// Configure handler base directory
 	api.DataDir = absDataDir
 
+	// Global Branding: Explicitly declare app context versioning to assure compatibility with remote API user-agent gating
+	go_backend.SetAppVersion("1.2.2")
+
 	// Initialize backend default download folder and setup path safety boundaries
 	defaultDownloadPath := absDataDir
 	if absDownloadsDir != "" {
@@ -120,10 +124,18 @@ func main() {
 
 	api.DefaultDownloadDir = defaultDownloadPath
 
+	// Map custom conversion strategy for container finalization behaviors
+	if convStrat := os.Getenv("FLACAPI_CONVERSION_STRATEGY"); convStrat != "" {
+		api.ConversionStrategy = strings.TrimSpace(convStrat)
+	}
+
 	if err := go_backend.SetDownloadDirectory(defaultDownloadPath); err != nil {
 		log.Printf("Warning: Failed to set default download directory: %v", err)
 	}
 	go_backend.AllowDownloadDir(absDataDir)
+
+	// Inject optional dynamic runtime configurations derived from environment scope
+	bootstrapExtensionConfigs(absDataDir)
 
 	// Bootstrap extension system using the clean run-time directory
 	if err := go_backend.InitExtensionSystem(runExtDir, absDataDir); err != nil {
@@ -143,9 +155,31 @@ func main() {
 				}
 			}
 
-			// Configure default fallback priorities to support automatic multi-provider lossless downloads (e.g. from Spotify metadata bootstrap)
-			_ = go_backend.SetProviderPriorityJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "amazon", "ytmusic-spotiflac", "soundcloud", "pandora"]`)
-			_ = go_backend.SetExtensionFallbackProviderIDsJSON(`["tidal-web", "apple-music", "qobuz-web", "deezer", "amazon", "ytmusic-spotiflac", "soundcloud", "pandora"]`)
+			// Configure default fallback priorities to support automatic multi-provider lossless downloads
+			defaultPriority := []string{"apple-music", "tidal-web", "qobuz-web", "deezer", "amazon", "ytmusic-spotiflac", "soundcloud", "pandora"}
+			finalPriority := defaultPriority
+
+			if customPriorityStr := os.Getenv("FLACAPI_PROVIDER_PRIORITY"); customPriorityStr != "" {
+				var customParts []string
+				for _, p := range strings.Split(customPriorityStr, ",") {
+					if p = strings.TrimSpace(p); p != "" {
+						customParts = append(customParts, p)
+					}
+				}
+				if len(customParts) > 0 {
+					finalPriority = customParts
+					log.Printf("Custom provider priority applied from environment: %v", finalPriority)
+				}
+			}
+
+			go_backend.SetProviderPriority(finalPriority)
+			go_backend.SetExtensionFallbackProviderIDs(finalPriority)
+
+			// Dynamic configuration: synchronize extensions with the latest available cloud mirrors and configurations on startup
+			if os.Getenv("FLACAPI_AUTO_UPDATE_EXTENSIONS") != "false" {
+				log.Println("Checking for updated extension payloads and refreshed mirror bundles from GitHub marketplace...")
+				autoUpdateExtensions(absDataDir)
+			}
 		}
 	}
 
@@ -267,6 +301,84 @@ func copyExtensions(srcDir, destDir string) error {
 	return nil
 }
 
+// storeExtensionResponse defines the internal extension metadata received from the store registry
+type storeExtensionResponse struct {
+	ID               string `json:"id"`
+	DisplayName      string `json:"display_name"`
+	Version          string `json:"version"`
+	IsInstalled      bool   `json:"is_installed"`
+	HasUpdate        bool   `json:"has_update"`
+	InstalledVersion string `json:"installed_version"`
+}
+
+// autoUpdateExtensions contacts the central community repository on launch to ensure absolute current delivery mirrors
+func autoUpdateExtensions(absDataDir string) {
+	// Ensure underlying store instance is registered with the persistent backend prior to polling
+	_ = go_backend.InitExtensionStoreJSON(absDataDir)
+
+	// Set the official centralized extension repository (Standard SpotiFLAC Mobile defaults)
+	defaultRepo := "https://github.com/spotiflacapp/SpotiFLAC-Extension"
+	if customRepo := os.Getenv("FLACAPI_EXTENSION_STORE_URL"); customRepo != "" {
+		defaultRepo = customRepo
+	}
+
+	if err := go_backend.SetStoreRegistryURLJSON(defaultRepo); err != nil {
+		log.Printf("[ExtensionSync] Failed to establish store reference: %v", err)
+		return
+	}
+
+	// Force a live poll to calculate current state against registry delta
+	resJSON, err := go_backend.GetStoreExtensionsJSON(true)
+	if err != nil {
+		log.Printf("[ExtensionSync] Network synchronization failed, deferring to cached packages: %v", err)
+		return
+	}
+
+	var extensions []storeExtensionResponse
+	if err := json.Unmarshal([]byte(resJSON), &extensions); err != nil {
+		log.Printf("[ExtensionSync] Encountered invalid catalog format: %v", err)
+		return
+	}
+
+	// Construct unique temporary directory for payload extraction
+	tempDir := filepath.Join(absDataDir, "extension_downloads_tmp")
+	_ = os.RemoveAll(tempDir) // Flush previous leftover buffers
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		log.Printf("[ExtensionSync] Local staging access denied: %v", err)
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	var upgradesPerformed int
+	for _, ext := range extensions {
+		if ext.IsInstalled && ext.HasUpdate {
+			log.Printf("[ExtensionSync] Identified active patch for %s: [v%s -> v%s]", ext.DisplayName, ext.InstalledVersion, ext.Version)
+
+			// Stream latest package from repository pool
+			filePath, err := go_backend.DownloadStoreExtensionJSON(ext.ID, tempDir)
+			if err != nil {
+				log.Printf("[ExtensionSync] Transfer aborted for %s: %v", ext.DisplayName, err)
+				continue
+			}
+
+			// Commit overwrite directly to live environment context
+			if _, err := go_backend.UpgradeExtensionFromPath(filePath); err != nil {
+				log.Printf("[ExtensionSync] Environment commit failed for %s: %v", ext.DisplayName, err)
+				continue
+			}
+
+			upgradesPerformed++
+			log.Printf("[ExtensionSync] Hotfix successfully propagated for %s", ext.DisplayName)
+		}
+	}
+
+	if upgradesPerformed > 0 {
+		log.Printf("[ExtensionSync] Re-integrated system configuration with %d hotfixes injected successfully", upgradesPerformed)
+	} else {
+		log.Println("[ExtensionSync] Infrastructure baseline validated; all modules report absolute parity with master.")
+	}
+}
+
 func copyFile(src, dest string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -280,4 +392,44 @@ func copyFile(src, dest string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// bootstrapExtensionConfigs synchronizes secure external environmental config declarations into extension-specific filesystem store.
+func bootstrapExtensionConfigs(dataDir string) {
+	// 1. Apple Music - Dynamic Security Credentials
+	appleKey := strings.TrimSpace(os.Getenv("FLACAPI_APPLE_PROXY_KEY"))
+	if appleKey != "" {
+		updateExtensionSetting(dataDir, "apple-music", "proxyApiKey", appleKey)
+	}
+
+	// 2. Tidal Web - Personalized Endpoint Mirroring
+	tidalMirror := strings.TrimSpace(os.Getenv("FLACAPI_TIDAL_MIRROR_URL"))
+	tidalToken := strings.TrimSpace(os.Getenv("FLACAPI_TIDAL_TOKEN"))
+	if tidalMirror != "" {
+		updateExtensionSetting(dataDir, "tidal-web", "downloadApiUrl", tidalMirror)
+	}
+	if tidalToken != "" {
+		updateExtensionSetting(dataDir, "tidal-web", "publicToken", tidalToken)
+	}
+}
+
+// updateExtensionSetting handles secure transactional merge of individual dynamic key mappings into core static setting manifest.
+func updateExtensionSetting(dataDir, extID, key string, val interface{}) {
+	targetPath := filepath.Join(dataDir, extID, "settings.json")
+	_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
+
+	// Read existing configuration frame to preserve tangential local overrides
+	configMap := map[string]interface{}{"_enabled": true}
+	if rawBytes, err := os.ReadFile(targetPath); err == nil {
+		_ = json.Unmarshal(rawBytes, &configMap)
+	}
+
+	// Overwrite discrete target binding
+	configMap[key] = val
+
+	// Safely persist final resolved manifest back to state store
+	finalOutput, _ := json.MarshalIndent(configMap, "", "  ")
+	if err := os.WriteFile(targetPath, finalOutput, 0644); err == nil {
+		log.Printf("Bootstrapped dynamic setting [%s] into runtime config for '%s'.", key, extID)
+	}
 }
