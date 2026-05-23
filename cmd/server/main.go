@@ -69,16 +69,10 @@ func main() {
 	// First load local definitions from file if running outside runtime containers
 	loadDotEnv()
 
-	// Retrieve paths from environment or use defaults
-	dataDir := os.Getenv("FLACAPI_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
-	extensionsDir := os.Getenv("FLACAPI_EXTENSIONS_DIR")
-	if extensionsDir == "" {
-		extensionsDir = "./extensions"
-	}
-	downloadsDir := os.Getenv("FLACAPI_DOWNLOADS_DIR")
+	// Default directory paths
+	dataDir := "./data"
+	extensionsDir := "./extensions"
+	downloadsDir := "./downloads"
 
 	absDataDir, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -88,13 +82,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid extensions directory path %s: %v", extensionsDir, err)
 	}
-
-	var absDownloadsDir string
-	if downloadsDir != "" {
-		absDownloadsDir, err = filepath.Abs(downloadsDir)
-		if err != nil {
-			log.Fatalf("Invalid downloads directory path %s: %v", downloadsDir, err)
-		}
+	absDownloadsDir, err := filepath.Abs(downloadsDir)
+	if err != nil {
+		log.Fatalf("Invalid downloads directory path %s: %v", downloadsDir, err)
 	}
 
 	// Ensure directories exist
@@ -104,10 +94,8 @@ func main() {
 	if err := os.MkdirAll(absExtDir, 0755); err != nil {
 		log.Fatalf("Failed to create extensions directory %s: %v", absExtDir, err)
 	}
-	if absDownloadsDir != "" {
-		if err := os.MkdirAll(absDownloadsDir, 0755); err != nil {
-			log.Fatalf("Failed to create downloads directory %s: %v", absDownloadsDir, err)
-		}
+	if err := os.MkdirAll(absDownloadsDir, 0755); err != nil {
+		log.Fatalf("Failed to create downloads directory %s: %v", absDownloadsDir, err)
 	}
 
 	// Determine active source extensions directory
@@ -138,13 +126,10 @@ func main() {
 	go_backend.SetAppVersion("1.2.2")
 
 	// Initialize backend default download folder and setup path safety boundaries
-	defaultDownloadPath := absDataDir
-	if absDownloadsDir != "" {
-		defaultDownloadPath = absDownloadsDir
-		// Allow and record independent download mount so SafePath grants access
-		api.AdditionalAllowedDirs = append(api.AdditionalAllowedDirs, absDownloadsDir)
-		go_backend.AllowDownloadDir(absDownloadsDir)
-	}
+	defaultDownloadPath := absDownloadsDir
+	// Allow and record independent download mount so SafePath grants access
+	api.AdditionalAllowedDirs = append(api.AdditionalAllowedDirs, absDownloadsDir)
+	go_backend.AllowDownloadDir(absDownloadsDir)
 
 	api.DefaultDownloadDir = defaultDownloadPath
 
@@ -340,9 +325,6 @@ func main() {
 
 		// Library & Cue Sheet
 		r.Post("/library/parse-cue", api.HandleParseCueSheet)
-
-		// Configuration
-		r.Post("/config/download-dir", api.HandleSetDownloadDir)
 	})
 
 	// Wrap router with CORS

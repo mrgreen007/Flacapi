@@ -806,30 +806,6 @@ func HandleEmbedLyrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(result))
 }
 
-// HandleSetDownloadDir configures the default download directory safely.
-func HandleSetDownloadDir(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Path string `json:"path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"path is required"}`, http.StatusBadRequest)
-		return
-	}
-	safePath, err := SafePath(req.Path)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	err = gb.SetDownloadDirectory(safePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	gb.AllowDownloadDir(safePath)
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"success":true}`))
-}
-
 // HandleCustomSearch triggers CustomSearchWithExtensionJSON in the backend.
 func HandleCustomSearch(w http.ResponseWriter, r *http.Request) {
 	var req struct {

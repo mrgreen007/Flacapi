@@ -111,8 +111,6 @@ A quick overview of active endpoints is provided below. For request payload stru
 - **`POST /api/v1/lyrics/get`** — Retrieve lyrics (LRC) for a track. `{ "spotifyId": "...", "trackName": "...", "artistName": "...", "filePath": "...", "durationMs": ... }`.
 - **`POST /api/v1/lyrics/embed`** — Embed lyrics into a music file. `{ "filePath": "...", "lyrics": "..." }`.
 
-### ⚙️ Configuration
-- **`POST /api/v1/config/download-dir`** — Set default download directory safely. `{ "path": "..." }`.
 
 ---
 
@@ -120,9 +118,6 @@ A quick overview of active endpoints is provided below. For request payload stru
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FLACAPI_DATA_DIR` | Base directory for persistent app databases and configs. | `./data` |
-| `FLACAPI_DOWNLOADS_DIR` | Master clean output library for audio deliveries. | (Maps to DataDir) |
-| `FLACAPI_EXTENSIONS_DIR` | Repository base holding source `.spotiflac-ext` packages. | `./extensions` |
 | `FLACAPI_CONVERSION_STRATEGY` | Set to `FORCE_FLAC` to automatically convert all lossless deliveries to `.flac` format. | `ORIGINAL` |
 | `FLACAPI_AUTO_UPDATE_EXTENSIONS` | Toggle automated mirror synchronization on boot cycles. | `true` |
 | `FLACAPI_PROVIDER_PRIORITY` | Override fallback precedence chain (e.g., `apple-music,tidal-web`). | (System Default) |

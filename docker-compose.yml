@@ -6,14 +6,12 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/data                    # app internal databases and state
-      - ./downloads:/downloads          # clean output folder for user downloads
+      - ./data:/app/data                  # app internal databases and state
+      - ./downloads:/app/downloads        # clean output folder for user downloads
       - ./extensions:/app/extensions      # persist extensions and support auto-updates
     environment:
-      - FLACAPI_DATA_DIR=/data
-      - FLACAPI_DOWNLOADS_DIR=/downloads
-      - FLACAPI_EXTENSIONS_DIR=/app/extensions
       - FLACAPI_CONVERSION_STRATEGY=ORIGINAL    # Set to FORCE_FLAC to normalize all downloads to .flac
       - FLACAPI_AUTO_UPDATE_EXTENSIONS=true     # Disable if container lacks external net access
+      - FLACAPI_RETENTION_HOURS=2               # Keep completed files for 2 hours before purging
       # - FLACAPI_PROVIDER_PRIORITY=apple-music,tidal-web,qobuz-web,deezer,amazon
     restart: unless-stopped

@@ -604,28 +604,7 @@ Parse a lossless `.cue` sheet file, returning song segments and subdivisions.
   }
   ```
 
-## 8. Configuration API
-
-### Set Default Download Directory
-Configure the default target download directory safely within the allowed boundary.
-
-* **Endpoint**: `POST /api/v1/config/download-dir`
-* **Request Payload**:
-  ```json
-  {
-    "path": "./data/downloads"
-  }
-  ```
-* **Response Format**:
-  ```json
-  {
-    "success": true
-  }
-  ```
-
----
-
-## 9. Client Integration Examples
+## 8. Client Integration Examples
 
 ### PowerShell
 ```powershell
@@ -666,14 +645,14 @@ curl -X POST http://localhost:8080/api/v1/download/strategy \
 
 ---
 
-## 🏁 10. Example API Call Flow
+## 🏁 9. Example API Call Flow
 
 Here is a comprehensive blueprint of a standard end-to-end interactive UI lifecycle using the Flacapi interface:
 
 ### Step 1: Ensure Server Readiness
-The client initializes by verifying connectivity to the active server and auditing existing system boundaries:
+The client initializes by verifying connectivity to the active server and checking system status:
 * **Request**: `GET http://localhost:8080/health` (or similar baseline GET ping)
-* **Pre-Flight Check**: Verify absolute environment routing settings via `POST /api/v1/config/download-dir`.
+* **Pre-Flight Check**: Verify status is `"ok"` and inspect upstream dependency availability.
 
 ### Step 2: Discover Song via Direct Search
 A user enters **"Arijit Singh"** into your interface search bar. The client triggers a provider lookup to gather accurate results:
@@ -740,15 +719,12 @@ Once status is `completed`, the client downloads the track directly from the ser
 
 ---
 
-## 11. System Administration & Environment Configuration
+## 10. System Administration & Environment Configuration
 
 The FLAC API Server is highly configurable via standard System Environment Variables. You can define these in a local `.env` file in the server root or export them directly in your Docker container stack.
 
 | Environment Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `FLACAPI_DATA_DIR` | string | `./data` | The core path where the SQLite catalog, server cache, and runtime extension environments are mounted. |
-| `FLACAPI_DOWNLOADS_DIR` | string | `./downloads` | The canonical public output folder. All downloaded audio is saved here automatically unless an absolute alternative is sent via API payload. |
-| `FLACAPI_EXTENSIONS_DIR` | string | `./extensions` | Path to the immutable extension packages (`.spotiflac-ext` zipped bundles). |
 | `FLACAPI_CONVERSION_STRATEGY` | string | `ORIGINAL` | Set to `ORIGINAL` to deliver raw native lossless formats (e.g. `.m4a`). Set to `FORCE_FLAC` to force internal FFmpeg conversion to `.flac` containers always. |
 | `FLACAPI_PROVIDER_PRIORITY` | list | *See Default* | Comma-separated string explicitly prioritizing extension traversal (e.g., `qobuz-web,apple-music`). |
 | `FLACAPI_AUTO_UPDATE_EXTENSIONS` | boolean | `true` | Enable or disable dynamic mirror synchronization on startup. Set to `false` to lock package versions. |
