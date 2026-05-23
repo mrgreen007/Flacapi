@@ -329,7 +329,9 @@ Read tags and embedded cover art metadata from a downloaded file on disk.
     "disc_number": 1,
     "isrc": "QM22L1901797",
     "genre": "Bollywood",
-    "duration": 262
+    "duration": 262,
+    "format": "m4a",
+    "audio_codec": "alac"
   }
   ```
 
