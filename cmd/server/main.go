@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -35,8 +36,28 @@ func loadDotEnv() {
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
-			// Preserve potential quotes around values
-			val = strings.Trim(val, `"'`)
+			// Handle inline comments and quotes properly
+			if strings.HasPrefix(val, `"`) {
+				endIdx := strings.Index(val[1:], `"`)
+				if endIdx != -1 {
+					val = val[1 : 1+endIdx]
+				} else {
+					val = strings.Trim(val, `"'`)
+				}
+			} else if strings.HasPrefix(val, `'`) {
+				endIdx := strings.Index(val[1:], `'`)
+				if endIdx != -1 {
+					val = val[1 : 1+endIdx]
+				} else {
+					val = strings.Trim(val, `"'`)
+				}
+			} else {
+				// Strip trailing comments starting with #
+				if hashIdx := strings.Index(val, "#"); hashIdx != -1 {
+					val = strings.TrimSpace(val[:hashIdx])
+				}
+				val = strings.Trim(val, `"'`)
+			}
 			if os.Getenv(key) == "" { // Don't override already set shell vars
 				os.Setenv(key, val)
 			}
@@ -205,7 +226,78 @@ func main() {
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+
+		type UpstreamStatus struct {
+			Status           string `json:"status"`
+			Message          string `json:"message,omitempty"`
+			MaintenanceUntil string `json:"maintenance_until,omitempty"`
+			Error            string `json:"error,omitempty"`
+		}
+
+		type HealthResponse struct {
+			Status   string         `json:"status"`
+			Upstream UpstreamStatus `json:"upstream"`
+		}
+
+		res := HealthResponse{
+			Status: "ok",
+			Upstream: UpstreamStatus{
+				Status: "ok",
+			},
+		}
+
+		// Query api.zarz.moe/v1/health with a 3-second timeout
+		client := http.Client{
+			Timeout: 3 * time.Second,
+		}
+		resp, err := client.Get("https://api.zarz.moe/v1/health")
+		if err != nil {
+			res.Upstream.Status = "offline"
+			res.Upstream.Error = err.Error()
+		} else {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusServiceUnavailable {
+				// Parse maintenance message if any
+				var mResp struct {
+					Error            string `json:"error"`
+					Message          string `json:"message"`
+					MaintenanceUntil string `json:"maintenance_until"`
+				}
+				bodyBytes, readErr := io.ReadAll(resp.Body)
+				if readErr == nil {
+					_ = json.Unmarshal(bodyBytes, &mResp)
+				}
+				res.Upstream.Status = "maintenance"
+				if mResp.Message != "" {
+					res.Upstream.Message = mResp.Message
+				} else {
+					res.Upstream.Message = "Upstream server is under maintenance."
+				}
+				res.Upstream.MaintenanceUntil = mResp.MaintenanceUntil
+			} else if resp.StatusCode != http.StatusOK {
+				res.Upstream.Status = "unhealthy"
+				res.Upstream.Error = fmt.Sprintf("HTTP status %d", resp.StatusCode)
+			} else {
+				// Status OK (200)
+				var uResp struct {
+					Status string `json:"status"`
+				}
+				bodyBytes, readErr := io.ReadAll(resp.Body)
+				if readErr == nil {
+					_ = json.Unmarshal(bodyBytes, &uResp)
+				}
+				if uResp.Status != "" {
+					res.Upstream.Status = uResp.Status
+				}
+			}
+		}
+
+		respBytes, marshalErr := json.Marshal(res)
+		if marshalErr != nil {
+			_, _ = w.Write([]byte(`{"status":"ok","upstream":{"status":"unknown","error":"failed to marshal health response"}}`))
+			return
+		}
+		_, _ = w.Write(respBytes)
 	})
 
 	// API Routing
@@ -218,6 +310,7 @@ func main() {
 		r.Get("/download/progress", api.HandleGetDownloadProgress)
 		r.Get("/download/progress/all", api.HandleGetAllDownloadProgress)
 		r.Get("/download/progress/delta", api.HandleGetAllDownloadProgressDelta)
+		r.Get("/download/file", api.HandleDownloadFile)
 
 		// Item Progress Lifecycle
 		r.Post("/download/item/init", api.HandleInitItemProgress)
@@ -262,6 +355,41 @@ func main() {
 		WriteTimeout: 15 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	// Background cleanup worker for abandoned files
+	retentionHours := 2
+	if hoursStr := os.Getenv("FLACAPI_RETENTION_HOURS"); hoursStr != "" {
+		var parseVal int
+		if _, parseErr := fmt.Sscanf(hoursStr, "%d", &parseVal); parseErr == nil && parseVal > 0 {
+			retentionHours = parseVal
+		}
+	}
+	log.Printf("Starting background cleanup worker (retention window: %d hours)", retentionHours)
+
+	cleanupTicker := time.NewTicker(10 * time.Minute)
+	go func() {
+		for range cleanupTicker.C {
+			now := time.Now()
+			api.DownloadStates.Range(func(key, value interface{}) bool {
+				state := value.(*api.DownloadState)
+				// Clean up if the record is older than the configured retention threshold
+				if now.Sub(state.CreatedAt) > time.Duration(retentionHours)*time.Hour {
+					log.Printf("[CleanupWorker] Purging expired download task %s", state.ItemID)
+					if state.FilePath != "" {
+						if _, err := os.Stat(state.FilePath); err == nil {
+							_ = os.Remove(state.FilePath)
+						}
+					}
+					// Also clean up request-scoped staging dir if it exists
+					stagingDir := filepath.Join(os.TempDir(), "spotiflac_staging", state.ItemID)
+					_ = os.RemoveAll(stagingDir)
+
+					api.DownloadStates.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 
 	// Start server in a goroutine
 	go func() {

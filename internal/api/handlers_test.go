@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSafePath(t *testing.T) {
@@ -81,3 +82,39 @@ func TestHandleInitItemProgress(t *testing.T) {
 		t.Errorf("Expected success to be true, got %v", res["success"])
 	}
 }
+
+func TestHandleGetDownloadProgressFiltered(t *testing.T) {
+	itemID := "test-progress-item"
+	DownloadStates.Store(itemID, &DownloadState{
+		ItemID:         itemID,
+		Status:         "finalizing",
+		CoverArtFailed: true,
+		CreatedAt:      time.Now(),
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/download/progress?itemId="+itemID, nil)
+	w := httptest.NewRecorder()
+
+	HandleGetDownloadProgress(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	var res map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if res["item_id"] != itemID {
+		t.Errorf("Expected item_id %s, got %v", itemID, res["item_id"])
+	}
+	if res["status"] != "finalizing" {
+		t.Errorf("Expected status 'finalizing', got %v", res["status"])
+	}
+	if res["cover_art_failed"] != true {
+		t.Errorf("Expected cover_art_failed true, got %v", res["cover_art_failed"])
+	}
+}
+
