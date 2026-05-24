@@ -309,22 +309,8 @@ func main() {
 		r.Post("/catalog/resolve-id", api.HandleResolveID)
 		r.Post("/catalog/metadata", api.HandleGetProviderMetadata)
 
-		// Metadata
-		r.Post("/metadata/read", api.HandleReadMetadata)
-		r.Post("/metadata/edit", api.HandleEditMetadata)
-		r.Post("/metadata/cover", api.HandleDownloadCover)
-		r.Post("/metadata/extract-cover", api.HandleExtractCover)
-
 		// Lyrics
 		r.Post("/lyrics/get", api.HandleGetLyrics)
-		r.Post("/lyrics/embed", api.HandleEmbedLyrics)
-
-		// Deduplication
-		r.Post("/download/duplicate/check", api.HandleCheckDuplicate)
-		r.Post("/download/duplicate/check-batch", api.HandleCheckDuplicatesBatch)
-
-		// Library & Cue Sheet
-		r.Post("/library/parse-cue", api.HandleParseCueSheet)
 	})
 
 	// Wrap router with CORS

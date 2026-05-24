@@ -679,101 +679,19 @@ func HandleCancelDownload(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"success":true}`))
 }
 
-// HandleReadMetadata reads and returns metadata of a file.
-func HandleReadMetadata(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		FilePath string `json:"filePath"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FilePath == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"filePath is required"}`, http.StatusBadRequest)
-		return
-	}
-	safePath, err := SafePath(req.FilePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	result, err := gb.ReadFileMetadata(safePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
-
-// HandleEditMetadata updates metadata of a file.
-func HandleEditMetadata(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		FilePath     string          `json:"filePath"`
-		MetadataJSON json.RawMessage `json:"metadataJSON"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FilePath == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"filePath is required"}`, http.StatusBadRequest)
-		return
-	}
-	safePath, err := SafePath(req.FilePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	result, err := gb.EditFileMetadata(safePath, string(req.MetadataJSON))
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
-
-// HandleDownloadCover downloads cover art into a safe local file.
-func HandleDownloadCover(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CoverURL   string `json:"coverUrl"`
-		OutputPath string `json:"outputPath"`
-		MaxQuality bool   `json:"maxQuality"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CoverURL == "" || req.OutputPath == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"coverUrl and outputPath are required"}`, http.StatusBadRequest)
-		return
-	}
-	safePath, err := SafePath(req.OutputPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	err = gb.DownloadCoverToFile(req.CoverURL, safePath, req.MaxQuality)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"success":true}`))
-}
-
 // HandleGetLyrics retrieves lyrics for a track.
 func HandleGetLyrics(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SpotifyID  string `json:"spotifyId"`
 		TrackName  string `json:"trackName"`
 		ArtistName string `json:"artistName"`
-		FilePath   string `json:"filePath"`
 		DurationMs int64  `json:"durationMs"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Invalid JSON", "message":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	var safePath string
-	var err error
-	if req.FilePath != "" {
-		safePath, err = SafePath(req.FilePath)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-			return
-		}
-	}
-	result, err := gb.GetLyricsLRCWithSource(req.SpotifyID, req.TrackName, req.ArtistName, safePath, req.DurationMs)
+	result, err := gb.GetLyricsLRCWithSource(req.SpotifyID, req.TrackName, req.ArtistName, "", req.DurationMs)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -782,29 +700,6 @@ func HandleGetLyrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(result))
 }
 
-// HandleEmbedLyrics embeds lyrics directly to a music file.
-func HandleEmbedLyrics(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		FilePath string `json:"filePath"`
-		Lyrics   string `json:"lyrics"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FilePath == "" || req.Lyrics == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"filePath and lyrics are required"}`, http.StatusBadRequest)
-		return
-	}
-	safePath, err := SafePath(req.FilePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	result, err := gb.EmbedLyricsToFile(safePath, req.Lyrics)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
 
 // HandleCustomSearch triggers CustomSearchWithExtensionJSON in the backend.
 func HandleCustomSearch(w http.ResponseWriter, r *http.Request) {
@@ -896,120 +791,6 @@ func HandleGetProviderMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := gb.GetProviderMetadataJSON(req.ProviderID, req.ResourceType, req.ResourceID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
-
-// HandleCheckDuplicate checks if a track is already downloaded in the output directory.
-func HandleCheckDuplicate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		OutputDir string `json:"outputDir"`
-		ISRC      string `json:"isrc"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ISRC == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"isrc is required"}`, http.StatusBadRequest)
-		return
-	}
-	targetDir := strings.TrimSpace(req.OutputDir)
-	if targetDir == "" {
-		targetDir = DefaultDownloadDir
-	}
-	safeOutputDir, err := SafePath(targetDir)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	result, err := gb.CheckDuplicate(safeOutputDir, req.ISRC)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
-
-// HandleCheckDuplicatesBatch checks duplication for a batch of tracks.
-func HandleCheckDuplicatesBatch(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		OutputDir  string          `json:"outputDir"`
-		TracksJSON json.RawMessage `json:"tracksJSON"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.TracksJSON) == 0 {
-		http.Error(w, `{"error":"Invalid JSON", "message":"tracksJSON is required"}`, http.StatusBadRequest)
-		return
-	}
-	targetDir := strings.TrimSpace(req.OutputDir)
-	if targetDir == "" {
-		targetDir = DefaultDownloadDir
-	}
-	safeOutputDir, err := SafePath(targetDir)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	result, err := gb.CheckDuplicatesBatch(safeOutputDir, string(req.TracksJSON))
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
-
-// HandleExtractCover extracts embedded cover art from an audio file.
-func HandleExtractCover(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		AudioPath  string `json:"audioPath"`
-		OutputPath string `json:"outputPath"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AudioPath == "" || req.OutputPath == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"audioPath and outputPath are required"}`, http.StatusBadRequest)
-		return
-	}
-	safeAudio, err := SafePath(req.AudioPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	safeOutput, err := SafePath(req.OutputPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	err = gb.ExtractCoverToFile(safeAudio, safeOutput)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"success":true}`))
-}
-
-// HandleParseCueSheet parses a local .cue sheet file.
-func HandleParseCueSheet(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		CuePath  string `json:"cuePath"`
-		AudioDir string `json:"audioDir"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CuePath == "" || req.AudioDir == "" {
-		http.Error(w, `{"error":"Invalid JSON", "message":"cuePath and audioDir are required"}`, http.StatusBadRequest)
-		return
-	}
-	safeCue, err := SafePath(req.CuePath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	safeAudioDir, err := SafePath(req.AudioDir)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"Security Error", "message":"%s"}`, err.Error()), http.StatusForbidden)
-		return
-	}
-	result, err := gb.ParseCueSheet(safeCue, safeAudioDir)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Internal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return

@@ -105,11 +105,7 @@ A quick overview of active endpoints is provided below. For request payload stru
 - **`POST /api/v1/download/item/cancel`** — Cancel an ongoing item download. `{ "itemId": "..." }`.
 
 ### 🎵 Metadata & Lyrics
-- **`POST /api/v1/metadata/read`** — Read file metadata. `{ "filePath": "..." }`.
-- **`POST /api/v1/metadata/edit`** — Update file metadata. `{ "filePath": "...", "metadataJSON": ... }`.
-- **`POST /api/v1/metadata/cover`** — Download cover art. `{ "coverUrl": "...", "outputPath": "...", "maxQuality": true }`.
-- **`POST /api/v1/lyrics/get`** — Retrieve lyrics (LRC) for a track. `{ "spotifyId": "...", "trackName": "...", "artistName": "...", "filePath": "...", "durationMs": ... }`.
-- **`POST /api/v1/lyrics/embed`** — Embed lyrics into a music file. `{ "filePath": "...", "lyrics": "..." }`.
+- **`POST /api/v1/lyrics/get`** — Retrieve lyrics (LRC) for a track. `{ "spotifyId": "...", "trackName": "...", "artistName": "...", "durationMs": ... }`.
 
 
 ---
