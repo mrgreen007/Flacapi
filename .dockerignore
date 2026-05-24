@@ -1,0 +1,22 @@
+# Local binaries and build outputs
+flacapi
+flacapi.exe
+bin/
+*.exe
+*.so
+*.dll
+*.dylib
+
+# Local databases and downloaded tracks
+data/
+downloads/
+
+# Version control and IDE metadata
+.git/
+.github/
+.gitmodules
+.vscode/
+.idea/
+
+# Local configurations
+.env

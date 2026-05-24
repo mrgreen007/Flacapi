@@ -7,16 +7,32 @@ This document serves as the comprehensive API reference for clients interacting 
 ## 1. General Configuration & Health
 
 ### Health Check
-Verify the server is online and the API is reachable.
+Verify the server is online and the API is reachable. The `upstream` block dynamically forwards the complete JSON payload from the upstream service's health endpoint (`https://api.zarz.moe/v1/health`) without filtering or stripping any keys.
 
 * **Endpoint**: `GET /health`
 * **Response Status**: `200 OK`
-* **Response Format (Normal / Online)**:
+* **Response Format (Example Degraded / Online)**:
   ```json
   {
     "status": "ok",
     "upstream": {
-      "status": "ok"
+      "status": "degraded",
+      "lastChecked": "2026-05-24T14:09:30.081Z",
+      "nextCheck": "2026-05-24T15:09:30.081Z",
+      "services": {
+        "apple": {
+          "label": "Apple Music",
+          "ok": false,
+          "status": 401,
+          "detail": "auth_required"
+        },
+        "tidal": {
+          "label": "Tidal",
+          "ok": true,
+          "status": 200,
+          "detail": "tid2_intermittent"
+        }
+      }
     }
   }
   ```
@@ -129,9 +145,6 @@ The primary endpoint to initiate a background search, resolution, and download o
 | `embed_lyrics` | boolean | No | Fetch and embed synchronized LRC lyrics if available. | Default: `true` (Allowed: `true`, `false`) |
 | `embed_max_quality_cover` | boolean | No | Download and embed high-resolution cover photo. | Default: `true` (Allowed: `true`, `false`) |
 | `item_id` | string | No | Unique handle to distinctly track this specific download through asynchronous polling APIs. | Default: Generated automatically (e.g. `dl-1716480000000`) |
-
-> [!NOTE]
-> **Client-specified Output Directory**: The client-supplied `output_dir` parameter is discontinued and ignored. Staging and final library directory structures are managed internally by the server.
 
 #### **Success Response Format**
 Returns an asynchronous accepted confirmation containing the `itemId` immediately.

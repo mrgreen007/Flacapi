@@ -212,23 +212,13 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		type UpstreamStatus struct {
-			Status           string `json:"status"`
-			Message          string `json:"message,omitempty"`
-			MaintenanceUntil string `json:"maintenance_until,omitempty"`
-			Error            string `json:"error,omitempty"`
-		}
-
 		type HealthResponse struct {
-			Status   string         `json:"status"`
-			Upstream UpstreamStatus `json:"upstream"`
+			Status   string      `json:"status"`
+			Upstream interface{} `json:"upstream"`
 		}
 
 		res := HealthResponse{
 			Status: "ok",
-			Upstream: UpstreamStatus{
-				Status: "ok",
-			},
 		}
 
 		// Query api.zarz.moe/v1/health with a 3-second timeout
@@ -237,42 +227,42 @@ func main() {
 		}
 		resp, err := client.Get("https://api.zarz.moe/v1/health")
 		if err != nil {
-			res.Upstream.Status = "offline"
-			res.Upstream.Error = err.Error()
+			res.Upstream = map[string]interface{}{
+				"status": "offline",
+				"error":  err.Error(),
+			}
 		} else {
 			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusServiceUnavailable {
-				// Parse maintenance message if any
-				var mResp struct {
-					Error            string `json:"error"`
-					Message          string `json:"message"`
-					MaintenanceUntil string `json:"maintenance_until"`
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				res.Upstream = map[string]interface{}{
+					"status": "unhealthy",
+					"error":  fmt.Sprintf("failed to read response: %v", readErr),
 				}
-				bodyBytes, readErr := io.ReadAll(resp.Body)
-				if readErr == nil {
-					_ = json.Unmarshal(bodyBytes, &mResp)
-				}
-				res.Upstream.Status = "maintenance"
-				if mResp.Message != "" {
-					res.Upstream.Message = mResp.Message
-				} else {
-					res.Upstream.Message = "Upstream server is under maintenance."
-				}
-				res.Upstream.MaintenanceUntil = mResp.MaintenanceUntil
-			} else if resp.StatusCode != http.StatusOK {
-				res.Upstream.Status = "unhealthy"
-				res.Upstream.Error = fmt.Sprintf("HTTP status %d", resp.StatusCode)
 			} else {
-				// Status OK (200)
-				var uResp struct {
-					Status string `json:"status"`
-				}
-				bodyBytes, readErr := io.ReadAll(resp.Body)
-				if readErr == nil {
-					_ = json.Unmarshal(bodyBytes, &uResp)
-				}
-				if uResp.Status != "" {
-					res.Upstream.Status = uResp.Status
+				var uMap map[string]interface{}
+				if unmarshalErr := json.Unmarshal(bodyBytes, &uMap); unmarshalErr == nil {
+					// Inject helper status key if not already defined (e.g. for maintenance responses)
+					if _, hasStatus := uMap["status"]; !hasStatus {
+						if resp.StatusCode == http.StatusServiceUnavailable {
+							uMap["status"] = "maintenance"
+						} else if resp.StatusCode != http.StatusOK {
+							uMap["status"] = "unhealthy"
+						} else {
+							uMap["status"] = "ok"
+						}
+					}
+					res.Upstream = uMap
+				} else {
+					// Fallback for non-JSON bodies (e.g. nginx error pages)
+					statusStr := "unhealthy"
+					if resp.StatusCode == http.StatusServiceUnavailable {
+						statusStr = "maintenance"
+					}
+					res.Upstream = map[string]interface{}{
+						"status": statusStr,
+						"error":  fmt.Sprintf("HTTP status %d: %s", resp.StatusCode, string(bodyBytes)),
+					}
 				}
 			}
 		}
