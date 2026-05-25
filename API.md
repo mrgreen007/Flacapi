@@ -7,14 +7,56 @@ This document serves as the comprehensive API reference for clients interacting 
 ## 1. General Configuration & Health
 
 ### Health Check
-Verify the server is online and the API is reachable.
+Verify the server is online and the API is reachable. The `upstream` block dynamically forwards the complete JSON payload from the upstream service's health endpoint (`https://api.zarz.moe/v1/health`) without filtering or stripping any keys.
 
 * **Endpoint**: `GET /health`
 * **Response Status**: `200 OK`
-* **Response Format**:
+* **Response Format (Example Degraded / Online)**:
   ```json
   {
-    "status": "ok"
+    "status": "ok",
+    "upstream": {
+      "status": "degraded",
+      "lastChecked": "2026-05-24T14:09:30.081Z",
+      "nextCheck": "2026-05-24T15:09:30.081Z",
+      "services": {
+        "apple": {
+          "label": "Apple Music",
+          "ok": false,
+          "status": 401,
+          "detail": "auth_required"
+        },
+        "tidal": {
+          "label": "Tidal",
+          "ok": true,
+          "status": 200,
+          "detail": "tid2_intermittent"
+        }
+      }
+    }
+  }
+  ```
+
+* **Response Format (Upstream Maintenance)**:
+  ```json
+  {
+    "status": "ok",
+    "upstream": {
+      "status": "maintenance",
+      "message": "Maintenance is in progress while we stabilize the server. Please try again later.",
+      "maintenance_until": "2026-05-25T04:15:35.000Z"
+    }
+  }
+  ```
+
+* **Response Format (Upstream Offline / Unreachable)**:
+  ```json
+  {
+    "status": "ok",
+    "upstream": {
+      "status": "offline",
+      "error": "Get \"https://api.zarz.moe/v1/health\": context deadline exceeded"
+    }
   }
   ```
 
@@ -65,7 +107,7 @@ Query paginated artist tracks directly from the selected SpotiFLAC extension's m
 ---
 
 ### Download by Strategy
-The primary endpoint to search, resolve, and download audio tracks using native fallback strategies or SpotiFLAC extensions.
+The primary endpoint to initiate a background search, resolution, and download of audio tracks using native fallback strategies or SpotiFLAC extensions. This endpoint executes asynchronously and returns immediately.
 
 * **Endpoint**: `POST /api/v1/download/strategy`
 * **Request Headers**: `Content-Type: application/json`
@@ -76,11 +118,10 @@ The primary endpoint to search, resolve, and download audio tracks using native 
     "artist_name": "Arijit Singh",
     "album_name": "Aashiqui 2",
     "isrc": "QM22L1901797",
-    "output_dir": "./data/output",
-    "output_ext": ".flac",
     "quality": "LOSSLESS",
     "use_extensions": true,
     "service": "tidal-web",
+    "conversion_strategy": "FORCE_FLAC",
     "embed_metadata": true,
     "embed_lyrics": true,
     "embed_max_quality_cover": true
@@ -93,56 +134,27 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 | :--- | :--- | :--- | :--- | :--- |
 | `track_name` | string | Conditional* | The title of the track to search and download. | Optional ONLY if `isrc` supplied. |
 | `artist_name` | string | Conditional* | The artist name of the track. | Optional ONLY if `isrc` supplied. |
-| `album_name` | string | No | The album name to match against results. | |
-| `isrc` | string | No | Optional high-precision unique lookup key. If supplied, names become optional. | |
-| `output_dir` | string | No | Relative or absolute path where the final audio file will be saved. | Relative paths automatically resolve to server root. |
-| `output_ext` | string | No | Target extension for conversion. | `.flac`, `.m4a`, `.opus` |
-| `quality` | string | No | Target audio download quality. If set to `LOSSLESS` or `HI_RES`, the API explicitly filters out lossy providers from the fallback chain. | `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS`, `HI_RES`, `HI_RES_LOSSLESS` |
-| `use_extensions` | boolean | No | Enable the SpotiFLAC JS extension run-times. | `true`, `false` |
-| `service` | string | No | The specific extension provider to utilize. | `amazon`, `apple-music`, `deezer`, `pandora`, `qobuz-web`, `soundcloud`, `spotify-web`, `tidal-web`, `ytmusic-spotiflac` |
-| `use_fallback` | boolean | No | Enable automatic fallback to other active extensions if the chosen provider fails. If `quality` is `LOSSLESS`, fallback is strictly restricted to lossless providers only. | `true`, `false` (default: `false`) |
-| `embed_metadata` | boolean | No | Embed ID3v2/Vorbis tags into the audio container. | `true`, `false` |
-| `embed_lyrics` | boolean | No | Fetch and embed synchronized LRC lyrics if available. | `true`, `false` |
-| `embed_max_quality_cover` | boolean | No | Download and embed high-resolution cover photo. | `true`, `false` |
-| `item_id` | string | No | Unique handle to distinctly track this specific download through asynchronous polling APIs. | Automatically generated if omitted. |
+| `album_name` | string | No | The album name to match against results. | Optional |
+| `isrc` | string | No | Optional high-precision unique lookup key. If supplied, names become optional. | Optional |
+| `quality` | string | No | Target audio download quality. If set to `LOSSLESS` or `HI_RES`, the API explicitly filters out lossy providers from the fallback chain. | Default: `LOSSLESS` (Allowed: `LOW`, `MEDIUM`, `HIGH`, `LOSSLESS`, `HI_RES`, `HI_RES_LOSSLESS`) |
+| `use_extensions` | boolean | No | Enable the SpotiFLAC JS extension run-times. | Default: `true` (Allowed: `true`, `false`) |
+| `service` | string | No | The specific extension provider to utilize first. | Default: fallback priority (Allowed: `amazon`, `apple-music`, `deezer`, `pandora`, `qobuz-web`, `soundcloud`, `spotify-web`, `tidal-web`, `ytmusic-spotiflac`) |
+| `use_fallback` | boolean | No | Enable automatic fallback to other active extensions if the chosen provider fails. If `quality` is `LOSSLESS`, fallback is strictly restricted to lossless providers only. | Default: `true` (Allowed: `true`, `false`) |
+| `conversion_strategy` | string | No | Choose whether to convert lossless `.m4a` to `.flac`. Lossy `.m4a` is never transcoded. | Default: `ORIGINAL` (Allowed: `ORIGINAL`, `FORCE_FLAC`) |
+| `embed_metadata` | boolean | No | Embed ID3v2/Vorbis tags into the audio container. | Default: `true` (Allowed: `true`, `false`) |
+| `embed_lyrics` | boolean | No | Fetch and embed synchronized LRC lyrics if available. | Default: `true` (Allowed: `true`, `false`) |
+| `embed_max_quality_cover` | boolean | No | Download and embed high-resolution cover photo. | Default: `true` (Allowed: `true`, `false`) |
+| `item_id` | string | No | Unique handle to distinctly track this specific download through asynchronous polling APIs. | Default: Generated automatically (e.g. `dl-1716480000000`) |
 
-> [!TIP]
-> **Smart API Enhancements Powered by the Flacapi Engine:**
-> * **Auto-Resolve ISRC**: If you supply an `isrc` but omit track/artist names, the server instantly invokes the core metadata library to transparently resolve and populate the correct track details before beginning the download.
-> * **Safe Directory Routing**: If you omit `output_dir`, the server intelligently roots the operation into your globally configured server downloads directory instead of failing or creating stray local temp files.
-> * **Filename Sanitization**: The API layer proactively intercepts and scrubs illegal Windows filesystem tokens (like `< > : " / \ | ? *`) from your inputs, preventing fatal disk creation errors.
-> * **Atomic Quality Sentinel**: When requesting `LOSSLESS` quality, the engine performs deep packet interrogation post-download. If a proxy server emits a secret codec downgrade (e.g. delivers lossy AAC hidden in a FLAC container), the engine intercepts, nukes the corrupt payload automatically, and invokes an immediate cascade recovery to an alternative provider transparently without alerting the client.
-> * **Zero-Maintenance Dynamic Refreshes**: Upon startup, the server establishes real-time link-state parity with the community-managed GitHub Extension Registry, syncing the latest runtime tokens and delivery mirrors automatically so you never have to adjust your configuration files manually to chase provider patches.
+#### **Success Response Format**
+Returns an asynchronous accepted confirmation containing the `itemId` immediately.
 
-#### **Success Response Format (PascalCase Schema)**
-> [!IMPORTANT]
-> Due to the architecture of the core backend proxy, Successful Responses utilize standard **PascalCase** keys, whereas Error Responses utilize `snake_case`. Clients should configure their JSON deserializers accordingly.
-
+* **Response Status**: `202 Accepted`
 ```json
 {
-  "FilePath": "C:\\Users\\sabuj\\Downloads\\Arijit Singh - Tum Hi Ho.m4a",
-  "BitDepth": 16,
-  "SampleRate": 44100,
-  "Title": "Tum Hi Ho (From \"Aashiqui 2\")",
-  "Artist": "Arijit Singh",
-  "Album": "Aashiqui 2",
-  "ReleaseDate": "2019-12-29",
-  "TrackNumber": 1,
-  "TotalTracks": 10,
-  "DiscNumber": 1,
-  "TotalDiscs": 1,
-  "ISRC": "QM22L1901797",
-  "CoverURL": "https://resources.tidal.com/images/...",
-  "Genre": "Pop",
-  "Label": "T-Series",
-  "Copyright": "2019 Arijit Singh",
-  "Composer": "Mithoon",
-  "LyricsLRC": "",
-  "DecryptionKey": "",
-  "Decryption": null,
-  "ActualExtension": ".m4a",
-  "ActualContainer": "ALAC",
-  "RequiresContainerConversion": false
+  "success": true,
+  "itemId": "dl-1716480000000",
+  "status": "preparing"
 }
 ```
 
@@ -160,56 +172,40 @@ The primary endpoint to search, resolve, and download audio tracks using native 
 ## 3. Progress Tracking & Lifecycles
 
 ### Get Single Progress
-Retrieve the progress status of the currently active download.
+Retrieve the progress status of a specific background download task by passing its `itemId` as a query parameter.
 
-* **Endpoint**: `GET /api/v1/download/progress`
+* **Endpoint**: `GET /api/v1/download/progress?itemId=<itemId>`
 * **Response Format**:
   ```json
   {
-    "current_file": "12345",
+    "item_id": "dl-1716480000000",
+    "status": "downloading",
     "progress": 45.5,
-    "speed_mbps": 2.4,
-    "bytes_total": 10521883,
-    "bytes_received": 4781232,
-    "is_downloading": true,
-    "status": "downloading"
+    "is_downloading": true
   }
   ```
 
-### Get All Active Progresses
-Retrieve all active and completed download progresses in the system.
-
-* **Endpoint**: `GET /api/v1/download/progress/all`
-* **Response Format**:
-  ```json
-  {
-    "items": {
-      "item-001": {
-        "item_id": "item-001",
-        "progress": 0.455,
-        "speed_mbps": 2.4,
-        "is_downloading": true,
-        "status": "downloading",
-        "bytes_total": 1000000
-      }
-    }
-  }
-  ```
+> [!TIP]
+> **Status Lifecycle**: The status will progress from `preparing` $\rightarrow$ `downloading` $\rightarrow$ `finalizing` (transcoding & tagging) $\rightarrow$ `completed` or `failed`. If the download fails, the response will include an `error` field detailing the failure (e.g. `quality_rejected: Provided stream failed final lossless assertion test` if the provider returned lossy audio when lossless was requested).
 
 ### Get Progress Delta (Polling)
-Optimized delta polling for UI clients, returning only progress changes since a particular sequence number.
+Optimized delta polling for UI clients, returning only progress changes and removed items since a particular sequence number. Progress is returned as a 100-based percentage rounded to at most 1 decimal place.
 
 * **Endpoint**: `GET /api/v1/download/progress/delta?since=<sequence_number>`
 * **Response Format**:
   ```json
   {
-    "last_seq": 102,
-    "deltas": [
-      {
-        "id": "item-001",
-        "percent": 48.2
+    "seq": 102,
+    "reset": false,
+    "items": {
+      "item-001": {
+        "item_id": "item-001",
+        "progress": 48.2,
+        "is_downloading": true,
+        "status": "downloading"
       }
-    ]
+    },
+    "removed": ["item-002"]
   }
   ```
 
@@ -283,77 +279,26 @@ Cancel an active background download task by its item ID.
 
 ---
 
-## 4. Metadata & Lyrics Management
+## 4. File Delivery & Retrieval API
 
-### Read File Metadata
-Read tags and embedded cover art metadata from a downloaded file on disk.
+### Retrieve Finalized File
+Download the completed audio file from the server. Once successfully downloaded by the client, the file is automatically purged from the server's disk to free up resources.
 
-* **Endpoint**: `POST /api/v1/metadata/read`
-* **Request Payload**:
-  ```json
-  {
-    "filePath": "./data/output/Arijit Singh - Tum Hi Ho.m4a"
-  }
-  ```
-* **Response Format**:
-  ```json
-  {
-    "title": "Tum Hi Ho",
-    "artist": "Arijit Singh",
-    "album": "Aashiqui 2",
-    "album_artist": "Arijit Singh",
-    "date": "2019-12-29",
-    "track_number": 1,
-    "total_tracks": 10,
-    "disc_number": 1,
-    "isrc": "QM22L1901797",
-    "genre": "Bollywood",
-    "duration": 262
-  }
-  ```
+* **Endpoint**: `GET /api/v1/download/file?itemId=<itemId>`
+* **Response Status**: 
+  * `200 OK` (Streams file binary)
+  * `400 Bad Request` (If download is still in progress)
+  * `410 Gone` (If download failed or has already been retrieved/purged)
+* **Response Headers**:
+  * `Content-Type: application/octet-stream`
+  * `Content-Disposition: attachment; filename="Arijit Singh - Tum Hi Ho.flac"`
 
-### Edit File Metadata
-Update tags on an existing audio file on disk.
+---
 
-* **Endpoint**: `POST /api/v1/metadata/edit`
-* **Request Payload**:
-  ```json
-  {
-    "file_path": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
-    "title": "Tum Hi Ho (Special Edition)",
-    "artist": "Arijit Singh",
-    "album": "Aashiqui 2"
-  }
-  ```
-* **Response Format**:
-  ```json
-  {
-    "success": true,
-    "message": "Metadata updated successfully"
-  }
-  ```
-
-### Download Cover Art
-Download track cover art from a URL into a safe local file path.
-
-* **Endpoint**: `POST /api/v1/metadata/cover`
-* **Request Payload**:
-  ```json
-  {
-    "coverUrl": "https://resources.tidal.com/images/1280x1280.jpg",
-    "outputPath": "./data/output/cover.jpg",
-    "maxQuality": true
-  }
-  ```
-* **Response Format**:
-  ```json
-  {
-    "success": true
-  }
-  ```
+## 5. Lyrics Management
 
 ### Get LRC Lyrics
-Fetch synchronized LRC lyrics for a track from Spotify ID, names, or a local audio file path containing embedded lyrics.
+Fetch synchronized LRC lyrics for a track from Spotify ID, names, and duration.
 
 * **Endpoint**: `POST /api/v1/lyrics/get`
 * **Request Payload**:
@@ -362,7 +307,6 @@ Fetch synchronized LRC lyrics for a track from Spotify ID, names, or a local aud
     "spotifyId": "4pt7mS6v697u697",
     "trackName": "Tum Hi Ho",
     "artistName": "Arijit Singh",
-    "filePath": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
     "durationMs": 262000
   }
   ```
@@ -376,28 +320,9 @@ Fetch synchronized LRC lyrics for a track from Spotify ID, names, or a local aud
   }
   ```
 
-### Embed Lyrics to File
-Embed raw or synchronized LRC lyrics directly into the metadata of an audio file on disk.
-
-* **Endpoint**: `POST /api/v1/lyrics/embed`
-* **Request Payload**:
-  ```json
-  {
-    "filePath": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
-    "lyrics": "[00:10.50]Hum tere bin ab reh nahi sakte..."
-  }
-  ```
-* **Response Format**:
-  ```json
-  {
-    "success": true,
-    "message": "Lyrics embedded successfully"
-  }
-  ```
-
 ---
 
-## 5. Catalog & Availability API
+## 6. Catalog & Availability API
 
 ### Check Track Availability
 Check if a track is available across platforms using its Spotify ID or ISRC code.
@@ -490,119 +415,7 @@ Fetch raw metadata from any supported extension provider.
 
 ---
 
-## 6. Deduplication API
-
-### Check Single Duplicate
-Check if a track has already been downloaded using its ISRC.
-
-* **Endpoint**: `POST /api/v1/download/duplicate/check`
-* **Payload**:
-  ```json
-  {
-    "outputDir": "./data/output",
-    "isrc": "QM22L1901797"
-  }
-  ```
-* **Response**:
-  ```json
-  {
-    "exists": true,
-    "filepath": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\data\\output\\Arijit Singh - Tum Hi Ho.m4a"
-  }
-  ```
-
-### Check Duplicate Batch
-Perform duplicate verification for a batch of tracks.
-
-* **Endpoint**: `POST /api/v1/download/duplicate/check-batch`
-* **Payload**:
-  ```json
-  {
-    "outputDir": "./data/output",
-    "tracksJSON": "[{\"isrc\":\"QM22L1901797\"}]"
-  }
-  ```
-* **Response**:
-  ```json
-  [
-    {
-      "isrc": "QM22L1901797",
-      "exists": true,
-      "file_path": "./data/output/Arijit Singh - Tum Hi Ho.m4a"
-    }
-  ]
-  ```
-
----
-
-## 7. Advanced Cover Art & Cue Sheets
-
-### Extract Embedded Cover Art
-Extract embedded cover photo from a local audio file on disk.
-
-* **Endpoint**: `POST /api/v1/metadata/extract-cover`
-* **Payload**:
-  ```json
-  {
-    "audioPath": "./data/output/Arijit Singh - Tum Hi Ho.m4a",
-    "outputPath": "./data/output/cover.jpg"
-  }
-  ```
-* **Response**:
-  ```json
-  {
-    "success": true
-  }
-  ```
-
-### Parse Lossless CUE Sheets
-Parse a lossless `.cue` sheet file, returning song segments and subdivisions.
-
-* **Endpoint**: `POST /api/v1/library/parse-cue`
-* **Payload**:
-  ```json
-  {
-    "cuePath": "./data/music/album.cue",
-    "audioDir": "./data/music"
-  }
-  ```
-* **Response**:
-  ```json
-  {
-    "album": "Masterpieces",
-    "artist": "Various Artists",
-    "tracks": [
-      {
-        "index": 1,
-        "title": "Intro",
-        "start_time": "00:00:00"
-      }
-    ]
-  }
-  ```
-
-## 8. Configuration API
-
-### Set Default Download Directory
-Configure the default target download directory safely within the allowed boundary.
-
-* **Endpoint**: `POST /api/v1/config/download-dir`
-* **Request Payload**:
-  ```json
-  {
-    "path": "./data/downloads"
-  }
-  ```
-* **Response Format**:
-  ```json
-  {
-    "success": true
-  }
-  ```
-
----
-
-## 9. Client Integration Examples
+## 7. Client Integration Examples
 
 ### PowerShell
 ```powershell
@@ -610,8 +423,6 @@ $body = @{
     track_name = "Tum Hi Ho"
     artist_name = "Arijit Singh"
     album_name = "Aashiqui 2"
-    output_dir = "./data/output"
-    output_ext = ".flac"
     quality = "LOSSLESS"
     use_extensions = $true
     service = "tidal-web"
@@ -631,8 +442,6 @@ curl -X POST http://localhost:8080/api/v1/download/strategy \
        "track_name": "Tum Hi Ho",
        "artist_name": "Arijit Singh",
        "album_name": "Aashiqui 2",
-       "output_dir": "./data/output",
-       "output_ext": ".flac",
        "quality": "LOSSLESS",
        "use_extensions": true,
        "service": "tidal-web",
@@ -643,14 +452,14 @@ curl -X POST http://localhost:8080/api/v1/download/strategy \
 
 ---
 
-## 🏁 10. Example API Call Flow
+## 🏁 8. Example API Call Flow
 
 Here is a comprehensive blueprint of a standard end-to-end interactive UI lifecycle using the Flacapi interface:
 
 ### Step 1: Ensure Server Readiness
-The client initializes by verifying connectivity to the active server and auditing existing system boundaries:
+The client initializes by verifying connectivity to the active server and checking system status:
 * **Request**: `GET http://localhost:8080/health` (or similar baseline GET ping)
-* **Pre-Flight Check**: Verify absolute environment routing settings via `POST /api/v1/config/download-dir`.
+* **Pre-Flight Check**: Verify status is `"ok"` and inspect upstream dependency availability.
 
 ### Step 2: Discover Song via Direct Search
 A user enters **"Arijit Singh"** into your interface search bar. The client triggers a provider lookup to gather accurate results:
@@ -678,63 +487,47 @@ Before starting, the client queries the aggregator engine using ONLY the ISRC to
   ```
 * **Analysis**: The engine confirms the ISRC is fully active and playable on `tidal: true` and `amazon: true`.
 
-### Step 4: Dispatch Master Quality Download (Smart ISRC Route)
-The client initiates the download. Crucially, **zero track names or manual output paths need to be provided**, letting our smart layer perform dynamic hydration and environment fallback:
+### Step 4: Dispatch Master Quality Download (Smart Async Route)
+The client initiates the download. Crucially, the endpoint returns immediately with a tracking `itemId`:
 * **Request**: `POST http://localhost:8080/api/v1/download/strategy`
 * **Payload**:
   ```json
   {
     "isrc": "QM22L1901797",
     "quality": "LOSSLESS",
-    "use_extensions": true
+    "use_extensions": true,
+    "conversion_strategy": "FORCE_FLAC"
+  }
+  ```
+* **Response**: `202 Accepted` returning `{"success": true, "itemId": "dl-12345", "status": "preparing"}`.
+
+### Step 5: Poll Progress Until Completed
+A background thread polls the filtered progress endpoint using the returned `itemId`:
+* **Request**: `GET http://localhost:8080/api/v1/download/progress?itemId=dl-12345`
+* **Completed Poll Return**:
+  ```json
+  {
+    "item_id": "dl-12345",
+    "status": "completed",
+    "progress": 100.0,
+    "is_downloading": false
   }
   ```
 
-### Step 5: Track Live Speed & Download Percents
-While Step 4's connection is active, a separate UI thread begins high-frequency background polling to hydrate your dynamic interface views:
-* **Request**: `GET http://localhost:8080/api/v1/download/progress`
-* **Sample Poll Return**:
-  ```json
-  {
-    "current_file": "item-abc",
-    "progress": 72.8,
-    "speed_mbps": 5.4,
-    "is_downloading": true,
-    "status": "downloading",
-    "bytes_received": 7500221,
-    "bytes_total": 10300000
-  }
-  ```
-
-### Step 6: Final Handshake & Clean Retrieval
-Once downloading finishes, the primary Request context from **Step 4** resolves and releases the definitive success bundle:
-* **Primary Final Response**:
-  ```json
-  {
-    "success": true,
-    "message": "Downloaded from tidal-web",
-    "file_path": "C:\\Users\\sabuj\\Workspace\\Projects\\Sabuj.in\\Flacapi\\downloads\\Arijit Singh - Tum Hi Ho.flac",
-    "actual_bit_depth": 16,
-    "actual_sample_rate": 44100,
-    "service": "tidal-web",
-    "title": "Tum Hi Ho",
-    "artist": "Arijit Singh",
-    "cover_url": "https://resources.tidal.com/images/..."
-  }
-  ```
-* **Victory State**: The file is saved flawlessly to the environmentally-provided `/downloads` folder. The client may now render the play-button to the end-user!
+### Step 6: Pull Finished File over HTTP
+Once status is `completed`, the client downloads the track directly from the server. The server deletes the file from disk upon successful transfer completion:
+* **Request**: `GET http://localhost:8080/api/v1/download/file?itemId=dl-12345`
+* **Response**: `200 OK` with binary file stream.
+* **Victory State**: The client has the fully tagged, verified lossless FLAC file locally, and the server's disk space is instantly reclaimed!
 
 ---
 
-## 11. System Administration & Environment Configuration
+## 9. System Administration & Environment Configuration
 
 The FLAC API Server is highly configurable via standard System Environment Variables. You can define these in a local `.env` file in the server root or export them directly in your Docker container stack.
 
 | Environment Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `FLACAPI_DATA_DIR` | string | `./data` | The core path where the SQLite catalog, server cache, and runtime extension environments are mounted. |
-| `FLACAPI_DOWNLOADS_DIR` | string | `./downloads` | The canonical public output folder. All downloaded audio is saved here automatically unless an absolute alternative is sent via API payload. |
-| `FLACAPI_EXTENSIONS_DIR` | string | `./extensions` | Path to the immutable extension packages (`.spotiflac-ext` zipped bundles). |
 | `FLACAPI_CONVERSION_STRATEGY` | string | `ORIGINAL` | Set to `ORIGINAL` to deliver raw native lossless formats (e.g. `.m4a`). Set to `FORCE_FLAC` to force internal FFmpeg conversion to `.flac` containers always. |
 | `FLACAPI_PROVIDER_PRIORITY` | list | *See Default* | Comma-separated string explicitly prioritizing extension traversal (e.g., `qobuz-web,apple-music`). |
 | `FLACAPI_AUTO_UPDATE_EXTENSIONS` | boolean | `true` | Enable or disable dynamic mirror synchronization on startup. Set to `false` to lock package versions. |
@@ -742,6 +535,7 @@ The FLAC API Server is highly configurable via standard System Environment Varia
 | `FLACAPI_APPLE_PROXY_KEY` | string | (Empty) | Custom authorized key for third-party premium Apple Music proxy nodes. |
 | `FLACAPI_TIDAL_MIRROR_URL` | string | (Empty) | Hard-override standard Tidal web scraper mirror with your own custom private endpoint URL. |
 | `FLACAPI_TIDAL_TOKEN` | string | (Empty) | Custom Tidal Public Client Token injected directly into backend scraping request streams. |
+| `FLACAPI_RETENTION_HOURS` | integer | `2` | Number of hours completed or failed download tasks/files are retained on the server before automated cleanup sweeps. |
 
 #### **Standard Provider Baseline Sequence**
 If `FLACAPI_PROVIDER_PRIORITY` is not explicitly declared, the engine traverses loaded services in the following persistent hierarchy:

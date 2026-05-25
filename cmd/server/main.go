@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -35,8 +36,28 @@ func loadDotEnv() {
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
-			// Preserve potential quotes around values
-			val = strings.Trim(val, `"'`)
+			// Handle inline comments and quotes properly
+			if strings.HasPrefix(val, `"`) {
+				endIdx := strings.Index(val[1:], `"`)
+				if endIdx != -1 {
+					val = val[1 : 1+endIdx]
+				} else {
+					val = strings.Trim(val, `"'`)
+				}
+			} else if strings.HasPrefix(val, `'`) {
+				endIdx := strings.Index(val[1:], `'`)
+				if endIdx != -1 {
+					val = val[1 : 1+endIdx]
+				} else {
+					val = strings.Trim(val, `"'`)
+				}
+			} else {
+				// Strip trailing comments starting with #
+				if hashIdx := strings.Index(val, "#"); hashIdx != -1 {
+					val = strings.TrimSpace(val[:hashIdx])
+				}
+				val = strings.Trim(val, `"'`)
+			}
 			if os.Getenv(key) == "" { // Don't override already set shell vars
 				os.Setenv(key, val)
 			}
@@ -48,16 +69,10 @@ func main() {
 	// First load local definitions from file if running outside runtime containers
 	loadDotEnv()
 
-	// Retrieve paths from environment or use defaults
-	dataDir := os.Getenv("FLACAPI_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
-	extensionsDir := os.Getenv("FLACAPI_EXTENSIONS_DIR")
-	if extensionsDir == "" {
-		extensionsDir = "./extensions"
-	}
-	downloadsDir := os.Getenv("FLACAPI_DOWNLOADS_DIR")
+	// Default directory paths
+	dataDir := "./data"
+	extensionsDir := "./extensions"
+	downloadsDir := "./downloads"
 
 	absDataDir, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -67,13 +82,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid extensions directory path %s: %v", extensionsDir, err)
 	}
-
-	var absDownloadsDir string
-	if downloadsDir != "" {
-		absDownloadsDir, err = filepath.Abs(downloadsDir)
-		if err != nil {
-			log.Fatalf("Invalid downloads directory path %s: %v", downloadsDir, err)
-		}
+	absDownloadsDir, err := filepath.Abs(downloadsDir)
+	if err != nil {
+		log.Fatalf("Invalid downloads directory path %s: %v", downloadsDir, err)
 	}
 
 	// Ensure directories exist
@@ -83,10 +94,8 @@ func main() {
 	if err := os.MkdirAll(absExtDir, 0755); err != nil {
 		log.Fatalf("Failed to create extensions directory %s: %v", absExtDir, err)
 	}
-	if absDownloadsDir != "" {
-		if err := os.MkdirAll(absDownloadsDir, 0755); err != nil {
-			log.Fatalf("Failed to create downloads directory %s: %v", absDownloadsDir, err)
-		}
+	if err := os.MkdirAll(absDownloadsDir, 0755); err != nil {
+		log.Fatalf("Failed to create downloads directory %s: %v", absDownloadsDir, err)
 	}
 
 	// Determine active source extensions directory
@@ -112,18 +121,16 @@ func main() {
 
 	// Configure handler base directory
 	api.DataDir = absDataDir
+	api.LoadDownloadStates()
 
 	// Global Branding: Explicitly declare app context versioning to assure compatibility with remote API user-agent gating
 	go_backend.SetAppVersion("1.2.2")
 
 	// Initialize backend default download folder and setup path safety boundaries
-	defaultDownloadPath := absDataDir
-	if absDownloadsDir != "" {
-		defaultDownloadPath = absDownloadsDir
-		// Allow and record independent download mount so SafePath grants access
-		api.AdditionalAllowedDirs = append(api.AdditionalAllowedDirs, absDownloadsDir)
-		go_backend.AllowDownloadDir(absDownloadsDir)
-	}
+	defaultDownloadPath := absDownloadsDir
+	// Allow and record independent download mount so SafePath grants access
+	api.AdditionalAllowedDirs = append(api.AdditionalAllowedDirs, absDownloadsDir)
+	go_backend.AllowDownloadDir(absDownloadsDir)
 
 	api.DefaultDownloadDir = defaultDownloadPath
 
@@ -205,7 +212,68 @@ func main() {
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+
+		type HealthResponse struct {
+			Status   string      `json:"status"`
+			Upstream interface{} `json:"upstream"`
+		}
+
+		res := HealthResponse{
+			Status: "ok",
+		}
+
+		// Query api.zarz.moe/v1/health with a 3-second timeout
+		client := http.Client{
+			Timeout: 3 * time.Second,
+		}
+		resp, err := client.Get("https://api.zarz.moe/v1/health")
+		if err != nil {
+			res.Upstream = map[string]interface{}{
+				"status": "offline",
+				"error":  err.Error(),
+			}
+		} else {
+			defer resp.Body.Close()
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				res.Upstream = map[string]interface{}{
+					"status": "unhealthy",
+					"error":  fmt.Sprintf("failed to read response: %v", readErr),
+				}
+			} else {
+				var uMap map[string]interface{}
+				if unmarshalErr := json.Unmarshal(bodyBytes, &uMap); unmarshalErr == nil {
+					// Inject helper status key if not already defined (e.g. for maintenance responses)
+					if _, hasStatus := uMap["status"]; !hasStatus {
+						if resp.StatusCode == http.StatusServiceUnavailable {
+							uMap["status"] = "maintenance"
+						} else if resp.StatusCode != http.StatusOK {
+							uMap["status"] = "unhealthy"
+						} else {
+							uMap["status"] = "ok"
+						}
+					}
+					res.Upstream = uMap
+				} else {
+					// Fallback for non-JSON bodies (e.g. nginx error pages)
+					statusStr := "unhealthy"
+					if resp.StatusCode == http.StatusServiceUnavailable {
+						statusStr = "maintenance"
+					}
+					res.Upstream = map[string]interface{}{
+						"status": statusStr,
+						"error":  fmt.Sprintf("HTTP status %d: %s", resp.StatusCode, string(bodyBytes)),
+					}
+				}
+			}
+		}
+
+		respBytes, marshalErr := json.Marshal(res)
+		if marshalErr != nil {
+			_, _ = w.Write([]byte(`{"status":"ok","upstream":{"status":"unknown","error":"failed to marshal health response"}}`))
+			return
+		}
+		_, _ = w.Write(respBytes)
 	})
 
 	// API Routing
@@ -216,8 +284,8 @@ func main() {
 		// Downloads & Progress
 		r.Post("/download/strategy", api.HandleDownloadByStrategy)
 		r.Get("/download/progress", api.HandleGetDownloadProgress)
-		r.Get("/download/progress/all", api.HandleGetAllDownloadProgress)
 		r.Get("/download/progress/delta", api.HandleGetAllDownloadProgressDelta)
+		r.Get("/download/file", api.HandleDownloadFile)
 
 		// Item Progress Lifecycle
 		r.Post("/download/item/init", api.HandleInitItemProgress)
@@ -231,25 +299,8 @@ func main() {
 		r.Post("/catalog/resolve-id", api.HandleResolveID)
 		r.Post("/catalog/metadata", api.HandleGetProviderMetadata)
 
-		// Metadata
-		r.Post("/metadata/read", api.HandleReadMetadata)
-		r.Post("/metadata/edit", api.HandleEditMetadata)
-		r.Post("/metadata/cover", api.HandleDownloadCover)
-		r.Post("/metadata/extract-cover", api.HandleExtractCover)
-
 		// Lyrics
 		r.Post("/lyrics/get", api.HandleGetLyrics)
-		r.Post("/lyrics/embed", api.HandleEmbedLyrics)
-
-		// Deduplication
-		r.Post("/download/duplicate/check", api.HandleCheckDuplicate)
-		r.Post("/download/duplicate/check-batch", api.HandleCheckDuplicatesBatch)
-
-		// Library & Cue Sheet
-		r.Post("/library/parse-cue", api.HandleParseCueSheet)
-
-		// Configuration
-		r.Post("/config/download-dir", api.HandleSetDownloadDir)
 	})
 
 	// Wrap router with CORS
@@ -262,6 +313,41 @@ func main() {
 		WriteTimeout: 15 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	// Background cleanup worker for abandoned files
+	retentionHours := 2
+	if hoursStr := os.Getenv("FLACAPI_RETENTION_HOURS"); hoursStr != "" {
+		var parseVal int
+		if _, parseErr := fmt.Sscanf(hoursStr, "%d", &parseVal); parseErr == nil && parseVal > 0 {
+			retentionHours = parseVal
+		}
+	}
+	log.Printf("Starting background cleanup worker (retention window: %d hours)", retentionHours)
+
+	cleanupTicker := time.NewTicker(10 * time.Minute)
+	go func() {
+		for range cleanupTicker.C {
+			now := time.Now()
+			api.DownloadStates.Range(func(key, value interface{}) bool {
+				state := value.(*api.DownloadState)
+				// Clean up if the record is older than the configured retention threshold
+				if now.Sub(state.CreatedAt) > time.Duration(retentionHours)*time.Hour {
+					log.Printf("[CleanupWorker] Purging expired download task %s", state.ItemID)
+					if state.FilePath != "" {
+						if _, err := os.Stat(state.FilePath); err == nil {
+							_ = os.Remove(state.FilePath)
+						}
+					}
+					// Also clean up request-scoped staging dir if it exists
+					stagingDir := filepath.Join(os.TempDir(), "spotiflac_staging", state.ItemID)
+					_ = os.RemoveAll(stagingDir)
+
+					api.DownloadStates.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 
 	// Start server in a goroutine
 	go func() {
