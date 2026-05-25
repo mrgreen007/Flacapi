@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,10 +89,9 @@ func TestHandleInitItemProgress(t *testing.T) {
 func TestHandleGetDownloadProgressFiltered(t *testing.T) {
 	itemID := "test-progress-item"
 	DownloadStates.Store(itemID, &DownloadState{
-		ItemID:         itemID,
-		Status:         "finalizing",
-		CoverArtFailed: true,
-		CreatedAt:      time.Now(),
+		ItemID:    itemID,
+		Status:    "finalizing",
+		CreatedAt: time.Now(),
 	})
 
 	req := httptest.NewRequest("GET", "/api/v1/download/progress?itemId="+itemID, nil)
@@ -115,13 +115,16 @@ func TestHandleGetDownloadProgressFiltered(t *testing.T) {
 	if res["status"] != "finalizing" {
 		t.Errorf("Expected status 'finalizing', got %v", res["status"])
 	}
-	if res["cover_art_failed"] != true {
-		t.Errorf("Expected cover_art_failed true, got %v", res["cover_art_failed"])
-	}
 }
 
 func TestHandleProgressEndpointsNormalization(t *testing.T) {
 	itemID := "test-norm-item"
+
+	DownloadStates.Store(itemID, &DownloadState{
+		ItemID: itemID,
+		Status: "downloading",
+	})
+	defer DownloadStates.Delete(itemID)
 
 	gb.InitItemProgress(itemID)
 	gb.SetItemProgress(itemID, 0.455342, 455342, 1000000)
@@ -160,41 +163,7 @@ func TestHandleProgressEndpointsNormalization(t *testing.T) {
 		}
 	}
 
-	// 2. Test Get All Download Progress
-	{
-		req := httptest.NewRequest("GET", "/api/v1/download/progress/all", nil)
-		w := httptest.NewRecorder()
-		HandleGetAllDownloadProgress(w, req)
 
-		resp := w.Result()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("GET /progress/all failed: %d", resp.StatusCode)
-		}
-
-		var res struct {
-			Items map[string]map[string]interface{} `json:"items"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&res)
-
-		item, exists := res.Items[itemID]
-		if !exists {
-			t.Fatalf("GET /progress/all: item %s not found in response", itemID)
-		}
-		if p, ok := item["progress"].(float64); !ok || p != 45.5 {
-			t.Errorf("GET /progress/all: expected progress 45.5, got %v", item["progress"])
-		}
-
-		// Verify fields are omitted
-		if _, exists := item["bytes_total"]; exists {
-			t.Error("GET /progress/all: expected bytes_total to be omitted")
-		}
-		if _, exists := item["bytes_received"]; exists {
-			t.Error("GET /progress/all: expected bytes_received to be omitted")
-		}
-		if _, exists := item["speed_mbps"]; exists {
-			t.Error("GET /progress/all: expected speed_mbps to be omitted")
-		}
-	}
 
 	// 3. Test Get Delta Download Progress
 	{
@@ -232,4 +201,99 @@ func TestHandleProgressEndpointsNormalization(t *testing.T) {
 		}
 	}
 }
+
+func TestDownloadStatesPersistence(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "flacapi-persist-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	originalDataDir := DataDir
+	defer func() { DataDir = originalDataDir }()
+	DataDir = tempDir
+
+	// Ensure the sync.Map is empty initially
+	DownloadStates.Range(func(key, value interface{}) bool {
+		DownloadStates.Delete(key)
+		return true
+	})
+
+	now := time.Now().Round(time.Second)
+
+	// Create three sample states
+	// 1. Completed state
+	DownloadStates.Store("item-completed", &DownloadState{
+		ItemID:       "item-completed",
+		Status:       "completed",
+		FilePath:     filepath.Join(tempDir, "song.m4a"),
+		CreatedAt:    now,
+		LastAccessed: now,
+	})
+	// 2. Failed state
+	DownloadStates.Store("item-failed", &DownloadState{
+		ItemID:       "item-failed",
+		Status:       "failed",
+		Error:        "some download error",
+		CreatedAt:    now,
+		LastAccessed: now,
+	})
+	// 3. Active/In-progress state (should be marked failed on load)
+	DownloadStates.Store("item-active", &DownloadState{
+		ItemID:       "item-active",
+		Status:       "downloading",
+		CreatedAt:    now,
+		LastAccessed: now,
+	})
+
+	// Save to disk
+	saveDownloadStates()
+
+	// Verify states file exists
+	filePath := filepath.Join(tempDir, "download_states.json")
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		t.Fatalf("download_states.json was not created on disk")
+	}
+
+	// Wipe states from memory
+	DownloadStates.Range(func(key, value interface{}) bool {
+		DownloadStates.Delete(key)
+		return true
+	})
+
+	// Load states back from disk
+	LoadDownloadStates()
+
+	// 1. Assert Completed state is restored correctly
+	if val, ok := DownloadStates.Load("item-completed"); !ok {
+		t.Error("Failed to restore completed task")
+	} else {
+		s := val.(*DownloadState)
+		if s.Status != "completed" || s.FilePath != filepath.Join(tempDir, "song.m4a") {
+			t.Errorf("Completed task restored incorrectly: %+v", s)
+		}
+	}
+
+	// 2. Assert Failed state is restored correctly
+	if val, ok := DownloadStates.Load("item-failed"); !ok {
+		t.Error("Failed to restore failed task")
+	} else {
+		s := val.(*DownloadState)
+		if s.Status != "failed" || s.Error != "some download error" {
+			t.Errorf("Failed task restored incorrectly: %+v", s)
+		}
+	}
+
+	// 3. Assert Active state is transitioned to failed with interruption message
+	if val, ok := DownloadStates.Load("item-active"); !ok {
+		t.Error("Failed to restore active task")
+	} else {
+		s := val.(*DownloadState)
+		if s.Status != "failed" || !strings.Contains(s.Error, "interrupted") {
+			t.Errorf("Active task was not correctly marked as failed: %+v", s)
+		}
+	}
+}
+
+
 

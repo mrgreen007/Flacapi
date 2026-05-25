@@ -93,8 +93,7 @@ A quick overview of active endpoints is provided below. For request payload stru
 
 ### 📥 Downloads & Progress
 - **`POST /api/v1/download/strategy`** — Search and download audio asynchronously. Returns tracking `itemId` immediately.
-- **`GET /api/v1/download/progress?itemId=<itemId>`** — Poll status, progress percentage, speed, and error tracking for an item.
-- **`GET /api/v1/download/progress/all`** — Retrieve progress list of all active downloads.
+- **`GET /api/v1/download/progress?itemId=<itemId>`** — Poll status, progress percentage, and error tracking for an item.
 - **`GET /api/v1/download/progress/delta?since=<seq>`** — Retrieve delta updates since sequence number `<seq>`.
 - **`GET /api/v1/download/file?itemId=<itemId>`** — Stream the completed audio file binary. Automatically deletes the file from disk upon successful retrieval.
 

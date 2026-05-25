@@ -121,6 +121,7 @@ func main() {
 
 	// Configure handler base directory
 	api.DataDir = absDataDir
+	api.LoadDownloadStates()
 
 	// Global Branding: Explicitly declare app context versioning to assure compatibility with remote API user-agent gating
 	go_backend.SetAppVersion("1.2.2")
@@ -283,7 +284,6 @@ func main() {
 		// Downloads & Progress
 		r.Post("/download/strategy", api.HandleDownloadByStrategy)
 		r.Get("/download/progress", api.HandleGetDownloadProgress)
-		r.Get("/download/progress/all", api.HandleGetAllDownloadProgress)
 		r.Get("/download/progress/delta", api.HandleGetAllDownloadProgressDelta)
 		r.Get("/download/file", api.HandleDownloadFile)
 

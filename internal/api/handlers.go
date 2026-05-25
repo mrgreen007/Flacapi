@@ -30,17 +30,94 @@ const (
 
 // DownloadState tracks asynchronous background download tasks
 type DownloadState struct {
-	ItemID         string    `json:"itemId"`
-	Status         string    `json:"status"` // preparing, downloading, finalizing, completed, failed
-	Error          string    `json:"error,omitempty"`
-	CoverArtFailed bool      `json:"cover_art_failed"`
-	FilePath       string    `json:"-"`
-	CreatedAt      time.Time `json:"-"`
-	LastAccessed   time.Time `json:"-"`
+	ItemID       string    `json:"itemId"`
+	Status       string    `json:"status"` // preparing, downloading, finalizing, completed, failed
+	Error        string    `json:"error,omitempty"`
+	FilePath     string    `json:"-"`
+	CreatedAt    time.Time `json:"-"`
+	LastAccessed time.Time `json:"-"`
 }
 
 // DownloadStates is a thread-safe map tracking all active and completed downloads
 var DownloadStates sync.Map // map[string]*DownloadState
+
+type persistentDownloadState struct {
+	ItemID       string    `json:"itemId"`
+	Status       string    `json:"status"`
+	Error        string    `json:"error,omitempty"`
+	FilePath     string    `json:"filePath"`
+	CreatedAt    time.Time `json:"createdAt"`
+	LastAccessed time.Time `json:"lastAccessed"`
+}
+
+func saveDownloadStates() {
+	states := make(map[string]*persistentDownloadState)
+	DownloadStates.Range(func(key, value interface{}) bool {
+		s := value.(*DownloadState)
+		states[key.(string)] = &persistentDownloadState{
+			ItemID:       s.ItemID,
+			Status:       s.Status,
+			Error:        s.Error,
+			FilePath:     s.FilePath,
+			CreatedAt:    s.CreatedAt,
+			LastAccessed: s.LastAccessed,
+		}
+		return true
+	})
+
+	data, err := json.MarshalIndent(states, "", "  ")
+	if err != nil {
+		log.Printf("[Storage] Failed to marshal download states: %v", err)
+		return
+	}
+
+	filePath := filepath.Join(DataDir, "download_states.json")
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		log.Printf("[Storage] Failed to write download states file: %v", err)
+	}
+}
+
+func LoadDownloadStates() {
+	filePath := filepath.Join(DataDir, "download_states.json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		log.Printf("[Storage] Failed to read download states: %v", err)
+		return
+	}
+
+	var states map[string]*persistentDownloadState
+	if err := json.Unmarshal(data, &states); err != nil {
+		log.Printf("[Storage] Failed to unmarshal download states: %v", err)
+		return
+	}
+
+	for k, v := range states {
+		// Clean up any states that were interrupted during download or finalization
+		if v.Status == statusPreparing || v.Status == statusDownloading || v.Status == statusFinalizing {
+			v.Status = statusFailed
+			v.Error = "Download interrupted by server restart"
+
+			// Clean up staging directory associated with the interrupted task
+			stagingDir := filepath.Join(os.TempDir(), "spotiflac_staging", v.ItemID)
+			_ = os.RemoveAll(stagingDir)
+		}
+
+		DownloadStates.Store(k, &DownloadState{
+			ItemID:       v.ItemID,
+			Status:       v.Status,
+			Error:        v.Error,
+			FilePath:     v.FilePath,
+			CreatedAt:    v.CreatedAt,
+			LastAccessed: v.LastAccessed,
+		})
+	}
+
+	// Persist the updated fail statuses
+	saveDownloadStates()
+}
 
 // DataDir is the primary root folder for app data and default relative path resolving.
 var DataDir = "./data"
@@ -115,16 +192,11 @@ func updateStateStatus(itemID, status, errStr string) {
 		state.Status = status
 		state.Error = errStr
 		state.LastAccessed = time.Now()
+		saveDownloadStates()
 	}
 }
 
-func updateStateCoverArtFailed(itemID string, failed bool) {
-	if val, ok := DownloadStates.Load(itemID); ok {
-		state := val.(*DownloadState)
-		state.CoverArtFailed = failed
-		state.LastAccessed = time.Now()
-	}
-}
+
 
 func updateStateFailed(itemID, errStr string) {
 	if val, ok := DownloadStates.Load(itemID); ok {
@@ -132,6 +204,7 @@ func updateStateFailed(itemID, errStr string) {
 		state.Status = statusFailed
 		state.Error = errStr
 		state.LastAccessed = time.Now()
+		saveDownloadStates()
 	}
 }
 
@@ -141,6 +214,7 @@ func updateStateCompleted(itemID, filePath string) {
 		state.Status = statusCompleted
 		state.FilePath = filePath
 		state.LastAccessed = time.Now()
+		saveDownloadStates()
 	}
 }
 
@@ -331,7 +405,6 @@ func runAsyncDownload(itemID string, reqMap map[string]interface{}, finalTargetD
 		} else {
 			// Log warning but proceed with tagging
 			log.Printf("[DownloadAsync] Cover art download failed: %v. Proceeding without cover.", httpErr)
-			updateStateCoverArtFailed(itemID, true)
 		}
 	}
 
@@ -494,6 +567,7 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    time.Now(),
 		LastAccessed: time.Now(),
 	})
+	saveDownloadStates()
 
 	// Register progress tracking in the backend
 	gb.InitItemProgress(itemID)
@@ -562,18 +636,16 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 
 	// Prepare result map
 	resMap := map[string]interface{}{
-		"item_id":          itemID,
-		"status":           statusPreparing,
-		"progress":         0.0,
-		"is_downloading":   false,
-		"cover_art_failed": false,
+		"item_id":        itemID,
+		"status":         statusPreparing,
+		"progress":       0.0,
+		"is_downloading": false,
 	}
 
 	// Populate local state metadata
 	if existsLocal {
 		state := val.(*DownloadState)
 		resMap["status"] = state.Status
-		resMap["cover_art_failed"] = state.CoverArtFailed
 		if state.Error != "" {
 			resMap["error"] = state.Error
 		}
@@ -613,23 +685,7 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resJSON)
 }
 
-// HandleGetAllDownloadProgress retrieves all active progress.
-func HandleGetAllDownloadProgress(w http.ResponseWriter, r *http.Request) {
-	result := gb.GetAllDownloadProgress()
 
-	var parsed multiProgressRaw
-	if err := json.Unmarshal([]byte(result), &parsed); err == nil && parsed.Items != nil {
-		for _, item := range parsed.Items {
-			item.Progress = roundToOneDecimal(item.Progress * 100)
-		}
-		if outputBytes, err := json.Marshal(parsed); err == nil {
-			result = string(outputBytes)
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(result))
-}
 
 // HandleGetAllDownloadProgressDelta retrieves delta updates since a sequence number.
 func HandleGetAllDownloadProgressDelta(w http.ResponseWriter, r *http.Request) {
@@ -642,8 +698,18 @@ func HandleGetAllDownloadProgressDelta(w http.ResponseWriter, r *http.Request) {
 
 	var parsed multiProgressDeltaRaw
 	if err := json.Unmarshal([]byte(result), &parsed); err == nil && parsed.Items != nil {
-		for _, item := range parsed.Items {
-			item.Progress = roundToOneDecimal(item.Progress * 100)
+		for id, item := range parsed.Items {
+			if val, ok := DownloadStates.Load(id); ok {
+				state := val.(*DownloadState)
+				item.Status = state.Status
+				if state.Status == statusCompleted || state.Status == statusFailed || state.Status == statusFinalizing {
+					item.Progress = 100.0
+				} else {
+					item.Progress = roundToOneDecimal(item.Progress * 100)
+				}
+			} else {
+				item.Progress = roundToOneDecimal(item.Progress * 100)
+			}
 		}
 		if outputBytes, err := json.Marshal(parsed); err == nil {
 			result = string(outputBytes)
@@ -884,6 +950,7 @@ func HandleDownloadFile(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[DownloadFile] Completed stream delivery for %s. Deleting from disk.", itemID)
 	_ = os.Remove(safePath)
 	DownloadStates.Delete(itemID)
+	saveDownloadStates()
 }
 
 

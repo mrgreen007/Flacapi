@@ -181,31 +181,12 @@ Retrieve the progress status of a specific background download task by passing i
     "item_id": "dl-1716480000000",
     "status": "downloading",
     "progress": 45.5,
-    "is_downloading": true,
-    "cover_art_failed": false
+    "is_downloading": true
   }
   ```
 
 > [!TIP]
 > **Status Lifecycle**: The status will progress from `preparing` $\rightarrow$ `downloading` $\rightarrow$ `finalizing` (transcoding & tagging) $\rightarrow$ `completed` or `failed`. If the download fails, the response will include an `error` field detailing the failure (e.g. `quality_rejected: Provided stream failed final lossless assertion test` if the provider returned lossy audio when lossless was requested).
-
-### Get All Active Progresses
-Retrieve all active and completed download progresses in the system. Progress is returned as a 100-based percentage rounded to at most 1 decimal place.
-
-* **Endpoint**: `GET /api/v1/download/progress/all`
-* **Response Format**:
-  ```json
-  {
-    "items": {
-      "item-001": {
-        "item_id": "item-001",
-        "progress": 45.5,
-        "is_downloading": true,
-        "status": "downloading"
-      }
-    }
-  }
-  ```
 
 ### Get Progress Delta (Polling)
 Optimized delta polling for UI clients, returning only progress changes and removed items since a particular sequence number. Progress is returned as a 100-based percentage rounded to at most 1 decimal place.
@@ -529,11 +510,7 @@ A background thread polls the filtered progress endpoint using the returned `ite
     "item_id": "dl-12345",
     "status": "completed",
     "progress": 100.0,
-    "speed_mbps": 0.0,
-    "is_downloading": false,
-    "cover_art_failed": false,
-    "bytes_received": 10521883,
-    "bytes_total": 10521883
+    "is_downloading": false
   }
   ```
 
