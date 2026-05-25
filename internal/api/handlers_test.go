@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	gb "github.com/zarz/spotiflac_android/go_backend"
 )
 
 func TestSafePath(t *testing.T) {
@@ -115,6 +117,119 @@ func TestHandleGetDownloadProgressFiltered(t *testing.T) {
 	}
 	if res["cover_art_failed"] != true {
 		t.Errorf("Expected cover_art_failed true, got %v", res["cover_art_failed"])
+	}
+}
+
+func TestHandleProgressEndpointsNormalization(t *testing.T) {
+	itemID := "test-norm-item"
+
+	gb.InitItemProgress(itemID)
+	gb.SetItemProgress(itemID, 0.455342, 455342, 1000000)
+	gb.SetItemBytesReceivedWithSpeed(itemID, 455342, 2.436)
+
+	// Clean up after test
+	defer gb.ClearItemProgress(itemID)
+
+	// 1. Test Get Single Progress
+	{
+		req := httptest.NewRequest("GET", "/api/v1/download/progress?itemId="+itemID, nil)
+		w := httptest.NewRecorder()
+		HandleGetDownloadProgress(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /progress failed: %d", resp.StatusCode)
+		}
+
+		var res map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&res)
+
+		if p, ok := res["progress"].(float64); !ok || p != 45.5 {
+			t.Errorf("GET /progress: expected progress 45.5, got %v", res["progress"])
+		}
+
+		// Verify fields are omitted
+		if _, exists := res["bytes_total"]; exists {
+			t.Error("GET /progress: expected bytes_total to be omitted")
+		}
+		if _, exists := res["bytes_received"]; exists {
+			t.Error("GET /progress: expected bytes_received to be omitted")
+		}
+		if _, exists := res["speed_mbps"]; exists {
+			t.Error("GET /progress: expected speed_mbps to be omitted")
+		}
+	}
+
+	// 2. Test Get All Download Progress
+	{
+		req := httptest.NewRequest("GET", "/api/v1/download/progress/all", nil)
+		w := httptest.NewRecorder()
+		HandleGetAllDownloadProgress(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /progress/all failed: %d", resp.StatusCode)
+		}
+
+		var res struct {
+			Items map[string]map[string]interface{} `json:"items"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&res)
+
+		item, exists := res.Items[itemID]
+		if !exists {
+			t.Fatalf("GET /progress/all: item %s not found in response", itemID)
+		}
+		if p, ok := item["progress"].(float64); !ok || p != 45.5 {
+			t.Errorf("GET /progress/all: expected progress 45.5, got %v", item["progress"])
+		}
+
+		// Verify fields are omitted
+		if _, exists := item["bytes_total"]; exists {
+			t.Error("GET /progress/all: expected bytes_total to be omitted")
+		}
+		if _, exists := item["bytes_received"]; exists {
+			t.Error("GET /progress/all: expected bytes_received to be omitted")
+		}
+		if _, exists := item["speed_mbps"]; exists {
+			t.Error("GET /progress/all: expected speed_mbps to be omitted")
+		}
+	}
+
+	// 3. Test Get Delta Download Progress
+	{
+		req := httptest.NewRequest("GET", "/api/v1/download/progress/delta?since=0", nil)
+		w := httptest.NewRecorder()
+		HandleGetAllDownloadProgressDelta(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /progress/delta failed: %d", resp.StatusCode)
+		}
+
+		var res struct {
+			Items map[string]map[string]interface{} `json:"items"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&res)
+
+		item, exists := res.Items[itemID]
+		if !exists {
+			t.Fatalf("GET /progress/delta: item %s not found in response", itemID)
+		}
+		if p, ok := item["progress"].(float64); !ok || p != 45.5 {
+			t.Errorf("GET /progress/delta: expected progress 45.5, got %v", item["progress"])
+		}
+
+		// Verify fields are omitted
+		if _, exists := item["bytes_total"]; exists {
+			t.Error("GET /progress/delta: expected bytes_total to be omitted")
+		}
+		if _, exists := item["bytes_received"]; exists {
+			t.Error("GET /progress/delta: expected bytes_received to be omitted")
+		}
+		if _, exists := item["speed_mbps"]; exists {
+			t.Error("GET /progress/delta: expected speed_mbps to be omitted")
+		}
 	}
 }
 

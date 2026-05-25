@@ -181,9 +181,6 @@ Retrieve the progress status of a specific background download task by passing i
     "item_id": "dl-1716480000000",
     "status": "downloading",
     "progress": 45.5,
-    "speed_mbps": 2.4,
-    "bytes_total": 10521883,
-    "bytes_received": 4781232,
     "is_downloading": true,
     "cover_art_failed": false
   }
@@ -193,7 +190,7 @@ Retrieve the progress status of a specific background download task by passing i
 > **Status Lifecycle**: The status will progress from `preparing` $\rightarrow$ `downloading` $\rightarrow$ `finalizing` (transcoding & tagging) $\rightarrow$ `completed` or `failed`. If the download fails, the response will include an `error` field detailing the failure (e.g. `quality_rejected: Provided stream failed final lossless assertion test` if the provider returned lossy audio when lossless was requested).
 
 ### Get All Active Progresses
-Retrieve all active and completed download progresses in the system.
+Retrieve all active and completed download progresses in the system. Progress is returned as a 100-based percentage rounded to at most 1 decimal place.
 
 * **Endpoint**: `GET /api/v1/download/progress/all`
 * **Response Format**:
@@ -202,30 +199,32 @@ Retrieve all active and completed download progresses in the system.
     "items": {
       "item-001": {
         "item_id": "item-001",
-        "progress": 0.455,
-        "speed_mbps": 2.4,
+        "progress": 45.5,
         "is_downloading": true,
-        "status": "downloading",
-        "bytes_total": 1000000
+        "status": "downloading"
       }
     }
   }
   ```
 
 ### Get Progress Delta (Polling)
-Optimized delta polling for UI clients, returning only progress changes since a particular sequence number.
+Optimized delta polling for UI clients, returning only progress changes and removed items since a particular sequence number. Progress is returned as a 100-based percentage rounded to at most 1 decimal place.
 
 * **Endpoint**: `GET /api/v1/download/progress/delta?since=<sequence_number>`
 * **Response Format**:
   ```json
   {
-    "last_seq": 102,
-    "deltas": [
-      {
-        "id": "item-001",
-        "percent": 48.2
+    "seq": 102,
+    "reset": false,
+    "items": {
+      "item-001": {
+        "item_id": "item-001",
+        "progress": 48.2,
+        "is_downloading": true,
+        "status": "downloading"
       }
-    ]
+    },
+    "removed": ["item-002"]
   }
   ```
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -341,9 +342,9 @@ func runAsyncDownload(itemID string, reqMap map[string]interface{}, finalTargetD
 		baseArgs = append(baseArgs, "-map", "1:v", "-disposition:v", "attached_pic")
 	}
 
-	// Copy streams or transcode cover art
+	// Transcode cover art to mjpeg (JPEG) for container compatibility (WebP, PNG, etc.)
 	if hasCover {
-		baseArgs = append(baseArgs, "-c:a", "copy", "-c:v", "copy")
+		baseArgs = append(baseArgs, "-c:a", "copy", "-c:v", "mjpeg")
 	} else {
 		baseArgs = append(baseArgs, "-c:a", "copy")
 	}
@@ -374,6 +375,9 @@ func runAsyncDownload(itemID string, reqMap map[string]interface{}, finalTargetD
 	addMetaNum("track", "track_number", "TrackNumber")
 	addMetaNum("disc", "disc_number", "DiscNumber")
 
+	if strings.ToLower(fileExt) == ".m4a" {
+		baseArgs = append(baseArgs, "-f", "mp4")
+	}
 	baseArgs = append(baseArgs, "-y", tempOutPath)
 
 	var ffmpegStderr bytes.Buffer
@@ -503,6 +507,31 @@ func HandleDownloadByStrategy(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(fmt.Sprintf(`{"success":true,"itemId":"%s","status":"preparing"}`, itemID)))
 }
 
+// itemProgressRaw is a helper structure to parse go_backend progress items
+type itemProgressRaw struct {
+	ItemID        string  `json:"item_id"`
+	Progress      float64 `json:"progress"`
+	IsDownloading bool    `json:"is_downloading"`
+	Status        string  `json:"status"`
+}
+
+// multiProgressRaw is a helper structure to parse go_backend multi-progress responses
+type multiProgressRaw struct {
+	Items map[string]*itemProgressRaw `json:"items"`
+}
+
+// multiProgressDeltaRaw is a helper structure to parse go_backend multi-progress delta responses
+type multiProgressDeltaRaw struct {
+	Seq     int64                       `json:"seq"`
+	Reset   bool                        `json:"reset,omitempty"`
+	Items   map[string]*itemProgressRaw `json:"items,omitempty"`
+	Removed []string                    `json:"removed,omitempty"`
+}
+
+func roundToOneDecimal(v float64) float64 {
+	return math.Round(v*10) / 10
+}
+
 // HandleGetDownloadProgress retrieves single progress.
 func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 	itemID := r.URL.Query().Get("itemId")
@@ -517,20 +546,6 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch backend's multi progress
 	allProgressJSON := gb.GetAllDownloadProgress()
-
-	type itemProgressRaw struct {
-		ItemID        string  `json:"item_id"`
-		BytesTotal    int64   `json:"bytes_total"`
-		BytesReceived int64   `json:"bytes_received"`
-		Progress      float64 `json:"progress"`
-		SpeedMBps     float64 `json:"speed_mbps"`
-		IsDownloading bool    `json:"is_downloading"`
-		Status        string  `json:"status"`
-	}
-
-	type multiProgressRaw struct {
-		Items map[string]*itemProgressRaw `json:"items"`
-	}
 
 	var parsed multiProgressRaw
 	_ = json.Unmarshal([]byte(allProgressJSON), &parsed)
@@ -550,9 +565,6 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 		"item_id":          itemID,
 		"status":           statusPreparing,
 		"progress":         0.0,
-		"speed_mbps":       0.0,
-		"bytes_total":      int64(0),
-		"bytes_received":   int64(0),
 		"is_downloading":   false,
 		"cover_art_failed": false,
 	}
@@ -575,9 +587,6 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 	// Merge backend tracking metrics if available
 	if parsed.Items != nil {
 		if backendItem, found := parsed.Items[itemID]; found {
-			resMap["bytes_total"] = backendItem.BytesTotal
-			resMap["bytes_received"] = backendItem.BytesReceived
-			resMap["speed_mbps"] = backendItem.SpeedMBps
 			resMap["is_downloading"] = backendItem.IsDownloading
 			// If our local state says "finalizing" or "completed" or "failed", keep that ground truth.
 			// Otherwise use the backend status ("preparing", "downloading", "completed", "finalizing").
@@ -585,11 +594,11 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 				state := val.(*DownloadState)
 				if state.Status == statusPreparing || state.Status == statusDownloading {
 					resMap["status"] = backendItem.Status
-					resMap["progress"] = backendItem.Progress * 100
+					resMap["progress"] = roundToOneDecimal(backendItem.Progress * 100)
 				}
 			} else {
 				resMap["status"] = backendItem.Status
-				resMap["progress"] = backendItem.Progress * 100
+				resMap["progress"] = roundToOneDecimal(backendItem.Progress * 100)
 			}
 		}
 	}
@@ -607,6 +616,17 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 // HandleGetAllDownloadProgress retrieves all active progress.
 func HandleGetAllDownloadProgress(w http.ResponseWriter, r *http.Request) {
 	result := gb.GetAllDownloadProgress()
+
+	var parsed multiProgressRaw
+	if err := json.Unmarshal([]byte(result), &parsed); err == nil && parsed.Items != nil {
+		for _, item := range parsed.Items {
+			item.Progress = roundToOneDecimal(item.Progress * 100)
+		}
+		if outputBytes, err := json.Marshal(parsed); err == nil {
+			result = string(outputBytes)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(result))
 }
@@ -619,6 +639,17 @@ func HandleGetAllDownloadProgressDelta(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Sscanf(sinceStr, "%d", &sinceSeq)
 	}
 	result := gb.GetAllDownloadProgressDelta(sinceSeq)
+
+	var parsed multiProgressDeltaRaw
+	if err := json.Unmarshal([]byte(result), &parsed); err == nil && parsed.Items != nil {
+		for _, item := range parsed.Items {
+			item.Progress = roundToOneDecimal(item.Progress * 100)
+		}
+		if outputBytes, err := json.Marshal(parsed); err == nil {
+			result = string(outputBytes)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(result))
 }
