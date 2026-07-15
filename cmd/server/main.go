@@ -340,11 +340,8 @@ func main() {
 		r.Post("/lyrics/get", api.HandleGetLyrics)
 
 		// Authentication Redirect Callback
-		r.Get("/auth/callback", api.HandleAuthCallback)
+		r.HandleFunc("/auth/callback", api.HandleAuthCallback)
 	})
-
-	// Add callback to the root level router as well for easier user access
-	r.Get("/auth/callback", api.HandleAuthCallback)
 
 	// Wrap router with CORS
 	handler := corsHandler(r)
