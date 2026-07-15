@@ -264,7 +264,7 @@ func ResolveCueAudioPath(cuePath string, cueFileName string) string {
 	}
 
 	baseName := strings.TrimSuffix(cueFileName, filepath.Ext(cueFileName))
-	commonExts := []string{".flac", ".wav", ".ape", ".mp3", ".ogg", ".wv", ".m4a"}
+	commonExts := []string{".flac", ".wav", ".aiff", ".aif", ".ape", ".mp3", ".ogg", ".wv", ".m4a"}
 	for _, ext := range commonExts {
 		candidate = filepath.Join(cueDir, baseName+ext)
 		if _, err := os.Stat(candidate); err == nil {

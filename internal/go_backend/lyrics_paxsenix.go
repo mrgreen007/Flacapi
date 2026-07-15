@@ -463,7 +463,7 @@ func (c *GeniusLyricsClient) SearchSong(trackName, artistName string, durationSe
 
 	params := url.Values{}
 	params.Set("q", query)
-	params.Set("per_page", "10")
+	params.Set("per_page", "5")
 	raw, err := fetchPaxsenixBody(c.httpClient, "https://genius.com/api/search/multi", params)
 	if err != nil {
 		return "", fmt.Errorf("genius search failed: %w", err)

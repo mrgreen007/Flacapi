@@ -44,18 +44,24 @@ func compareVersions(v1, v2 string) int {
 	return 0
 }
 
+func isExtensionPackagePath(filePath string) bool {
+	lowerPath := strings.ToLower(filePath)
+	return strings.HasSuffix(lowerPath, ".spotiflac-ext") || strings.HasSuffix(lowerPath, ".sflx")
+}
+
 type loadedExtension struct {
-	ID          string             `json:"id"`
-	Manifest    *ExtensionManifest `json:"manifest"`
-	VM          *goja.Runtime      `json:"-"`
-	VMMu        sync.Mutex         `json:"-"`
-	runtime     *extensionRuntime
-	initialized bool
-	Enabled     bool   `json:"enabled"`
-	Error       string `json:"error,omitempty"`
-	DataDir     string `json:"data_dir"`
-	SourceDir   string `json:"source_dir"`
-	IconPath    string `json:"icon_path"`
+	ID           string             `json:"id"`
+	Manifest     *ExtensionManifest `json:"manifest"`
+	VM           *goja.Runtime      `json:"-"`
+	VMMu         sync.Mutex         `json:"-"`
+	runtime      *extensionRuntime
+	indexProgram *goja.Program
+	initialized  bool
+	Enabled      bool   `json:"enabled"`
+	Error        string `json:"error,omitempty"`
+	DataDir      string `json:"data_dir"`
+	SourceDir    string `json:"source_dir"`
+	IconPath     string `json:"icon_path"`
 }
 
 func getExtensionInitSettings(extensionID string) map[string]interface{} {
@@ -118,7 +124,11 @@ func (ext *loadedExtension) lockReadyVM() (*goja.Runtime, error) {
 }
 
 type extensionManager struct {
-	mu            sync.RWMutex
+	mu sync.RWMutex
+	// mutationMu serializes install/upgrade/remove (heavy FS + goja VM
+	// teardown/reload), which are not safe to run concurrently. Acquired before
+	// m.mu; "*Locked" helpers assume it is held.
+	mutationMu    sync.Mutex
 	extensions    map[string]*loadedExtension
 	extensionsDir string
 	dataDir       string
@@ -156,8 +166,14 @@ func (m *extensionManager) SetDirectories(extensionsDir, dataDir string) error {
 }
 
 func (m *extensionManager) LoadExtensionFromFile(filePath string) (*loadedExtension, error) {
-	if !strings.HasSuffix(strings.ToLower(filePath), ".spotiflac-ext") {
-		return nil, fmt.Errorf("invalid file format: please select a .spotiflac-ext file")
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+	return m.loadExtensionFromFileLocked(filePath)
+}
+
+func (m *extensionManager) loadExtensionFromFileLocked(filePath string) (*loadedExtension, error) {
+	if !isExtensionPackagePath(filePath) {
+		return nil, fmt.Errorf("invalid file format: please select a .spotiflac-ext or .sflx file")
 	}
 
 	zipReader, err := zip.OpenReader(filePath)
@@ -212,7 +228,7 @@ func (m *extensionManager) LoadExtensionFromFile(filePath string) (*loadedExtens
 	if exists {
 		versionCompare := compareVersions(manifest.Version, existingVersion)
 		if versionCompare > 0 {
-			return m.UpgradeExtension(filePath)
+			return m.upgradeExtensionLocked(filePath)
 		} else if versionCompare == 0 {
 			return nil, fmt.Errorf("extension '%s' v%s is already installed", existingDisplayName, existingVersion)
 		} else {
@@ -296,6 +312,7 @@ func (m *extensionManager) LoadExtensionFromFile(filePath string) (*loadedExtens
 func initializeVMLocked(ext *loadedExtension) error {
 	ext.VM = nil
 	ext.runtime = nil
+	ext.indexProgram = nil
 	ext.initialized = false
 	vm := goja.New()
 	ext.VM = vm
@@ -305,6 +322,11 @@ func initializeVMLocked(ext *loadedExtension) error {
 	if err != nil {
 		return fmt.Errorf("failed to read index.js: %w", err)
 	}
+	indexProgram, err := goja.Compile(indexPath, string(jsCode), false)
+	if err != nil {
+		return fmt.Errorf("failed to compile extension code: %w", err)
+	}
+	ext.indexProgram = indexProgram
 
 	runtime := newExtensionRuntime(ext)
 	ext.runtime = runtime
@@ -331,7 +353,7 @@ func initializeVMLocked(ext *loadedExtension) error {
 		return goja.Undefined()
 	})
 
-	_, err = vm.RunString(string(jsCode))
+	_, err = vm.RunProgram(indexProgram)
 	if err != nil {
 		return fmt.Errorf("failed to execute extension code: %w", err)
 	}
@@ -346,10 +368,17 @@ func initializeVMLocked(ext *loadedExtension) error {
 func newIsolatedExtensionRuntime(ext *loadedExtension) (*goja.Runtime, *extensionRuntime, error) {
 	vm := goja.New()
 
-	indexPath := filepath.Join(ext.SourceDir, "index.js")
-	jsCode, err := os.ReadFile(indexPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read index.js: %w", err)
+	indexProgram := ext.indexProgram
+	if indexProgram == nil {
+		indexPath := filepath.Join(ext.SourceDir, "index.js")
+		jsCode, err := os.ReadFile(indexPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read index.js: %w", err)
+		}
+		indexProgram, err = goja.Compile(indexPath, string(jsCode), false)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to compile extension code: %w", err)
+		}
 	}
 
 	runtime := &extensionRuntime{
@@ -392,7 +421,7 @@ func newIsolatedExtensionRuntime(ext *loadedExtension) (*goja.Runtime, *extensio
 		return goja.Undefined()
 	})
 
-	if _, err := vm.RunString(string(jsCode)); err != nil {
+	if _, err := vm.RunProgram(indexProgram); err != nil {
 		runtime.closeStorageFlusher()
 		return nil, nil, fmt.Errorf("failed to execute extension code: %w", err)
 	}
@@ -663,7 +692,7 @@ func (m *extensionManager) LoadExtensionsFromDirectory(dirPath string) ([]string
 					loaded = append(loaded, ext.ID)
 				}
 			}
-		} else if strings.HasSuffix(strings.ToLower(entry.Name()), ".spotiflac-ext") {
+		} else if isExtensionPackagePath(entry.Name()) {
 			ext, err := m.LoadExtensionFromFile(filepath.Join(dirPath, entry.Name()))
 			if err != nil {
 				GoLog("[Extension] Failed to load %s: %v\n", entry.Name(), err)
@@ -736,6 +765,9 @@ func (m *extensionManager) loadExtensionFromDirectory(dirPath string) (*loadedEx
 }
 
 func (m *extensionManager) RemoveExtension(extensionID string) error {
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
 	ext, err := m.GetExtension(extensionID)
 	if err != nil {
 		return err
@@ -756,8 +788,14 @@ func (m *extensionManager) RemoveExtension(extensionID string) error {
 
 // Only allows upgrades (new version > current version), not downgrades
 func (m *extensionManager) UpgradeExtension(filePath string) (*loadedExtension, error) {
-	if !strings.HasSuffix(strings.ToLower(filePath), ".spotiflac-ext") {
-		return nil, fmt.Errorf("invalid file format: please select a .spotiflac-ext file")
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+	return m.upgradeExtensionLocked(filePath)
+}
+
+func (m *extensionManager) upgradeExtensionLocked(filePath string) (*loadedExtension, error) {
+	if !isExtensionPackagePath(filePath) {
+		return nil, fmt.Errorf("invalid file format: please select a .spotiflac-ext or .sflx file")
 	}
 
 	zipReader, err := zip.OpenReader(filePath)
@@ -905,8 +943,8 @@ type ExtensionUpgradeInfo struct {
 }
 
 func (m *extensionManager) checkExtensionUpgradeInternal(filePath string) (*ExtensionUpgradeInfo, error) {
-	if !strings.HasSuffix(strings.ToLower(filePath), ".spotiflac-ext") {
-		return nil, fmt.Errorf("invalid file format: please select a .spotiflac-ext file")
+	if !isExtensionPackagePath(filePath) {
+		return nil, fmt.Errorf("invalid file format: please select a .spotiflac-ext or .sflx file")
 	}
 
 	zipReader, err := zip.OpenReader(filePath)
@@ -1151,14 +1189,16 @@ func (m *extensionManager) InvokeAction(extensionID string, actionName string) (
 
 	// Merge extension return values onto the top-level JSON object so Flutter can read
 	// message, open_auth_url, setting_updates without unwrapping a nested "result" key.
+	actionNameLiteral := strconv.Quote(actionName)
 	script := fmt.Sprintf(`
-		(function() {
-			if (typeof extension !== 'undefined' && typeof extension.%s === 'function') {
-				try {
-					var result = extension.%s();
-					if (result && typeof result.then === 'function') {
-						return { success: true, pending: true, message: 'Action started' };
-					}
+			(function() {
+				var actionName = %s;
+				function runAction(fn) {
+					try {
+						var result = fn();
+						if (result && typeof result.then === 'function') {
+							return { success: true, pending: true, message: 'Action started' };
+						}
 					if (result !== null && result !== undefined && typeof result === 'object') {
 						var isArr = false;
 						if (typeof Array !== 'undefined' && Array.isArray) {
@@ -1173,13 +1213,19 @@ func (m *extensionManager) InvokeAction(extensionID string, actionName string) (
 						}
 					}
 					return { success: true, result: result };
-				} catch (e) {
-					return { success: false, error: e.toString() };
+					} catch (e) {
+						return { success: false, error: e.toString() };
+					}
 				}
-			}
-			return { success: false, error: 'Action function not found: %s' };
-		})()
-	`, actionName, actionName, actionName)
+				if (typeof extension !== 'undefined' && extension && typeof extension[actionName] === 'function') {
+					return runAction(function() { return extension[actionName](); });
+				}
+				if (actionName === 'completeGrant' && typeof session !== 'undefined' && session && typeof session.completeGrant === 'function') {
+					return runAction(function() { return session.completeGrant(); });
+				}
+				return { success: false, error: 'Action function not found: ' + actionName };
+			})()
+		`, actionNameLiteral)
 
 	result, err := RunWithTimeoutAndRecover(vm, script, DefaultJSTimeout)
 	if err != nil {

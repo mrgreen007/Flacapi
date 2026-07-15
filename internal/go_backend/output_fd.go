@@ -35,7 +35,7 @@ func openOutputForWrite(outputPath string, outputFD int) (*os.File, error) {
 		if err == nil {
 			return file, nil
 		}
-		if strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		if os.IsPermission(err) {
 			return os.OpenFile(path, os.O_WRONLY, 0)
 		}
 		return nil, err

@@ -1130,3 +1130,224 @@ func isLosslessRequest(q string) bool {
 	upper := strings.ToUpper(strings.TrimSpace(q))
 	return upper == qualityLossless || upper == "HI_RES" || upper == "HI_RES_LOSSLESS"
 }
+
+// HandleAuthCallback handles the OAuth / signed session grant callback
+func HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	grant := r.URL.Query().Get("grant")
+	if grant == "" {
+		grant = r.URL.Query().Get("code")
+	}
+	extID := r.URL.Query().Get("state")
+	
+	// Sanitize extension ID to prevent XSS and path traversal
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+	extID = reg.ReplaceAllString(extID, "")
+
+	if grant == "" || extID == "" {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(renderAuthResponse("Missing Parameters", "Both grant/code and state (extension ID) are required.", false)))
+		return
+	}
+
+	gb.SetExtensionSessionGrantByID(extID, grant)
+	_, err := gb.InvokeExtensionActionJSON(extID, "completeGrant")
+	if err != nil {
+		// Fall back to oauth code if not session grant
+		gb.SetExtensionAuthCodeByID(extID, grant)
+		_, err = gb.InvokeExtensionActionJSON(extID, "completeSpotifyLogin")
+	}
+
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(renderAuthResponse("Authentication Failed", err.Error(), false)))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	_, _ = w.Write([]byte(renderAuthResponse("Authentication Successful", fmt.Sprintf("Successfully verified and loaded session keys for extension <strong>%s</strong>. The server is now fully independent for this provider.", extID), true)))
+}
+
+func renderAuthResponse(title, message string, success bool) string {
+	themeColor := "#ef4444" // red for error
+	icon := "❌"
+	if success {
+		themeColor = "#10b981" // emerald green for success
+		icon = "✓"
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s | SpotiFLAC Server</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Plus+Jakarta+Sans:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #09090b;
+            --card-bg: rgba(20, 20, 25, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --accent-color: %s;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Ambient light effects */
+        body::before {
+            content: '';
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: var(--accent-color);
+            filter: blur(150px);
+            opacity: 0.15;
+            border-radius: 50%%;
+            top: 20%%;
+            left: 50%%;
+            transform: translate(-50%%, -50%%);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 40px;
+            width: 100%%;
+            max-width: 480px;
+            text-align: center;
+            z-index: 1;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .badge-container {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%%;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        .badge {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%%;
+            background: var(--accent-color);
+            color: #fff;
+            font-size: 28px;
+            font-weight: bold;
+            box-shadow: 0 0 20px var(--accent-color);
+            animation: pulse 2s infinite;
+        }
+
+        h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 28px;
+            font-weight: 800;
+            margin-bottom: 12px;
+            letter-spacing: -0.5px;
+        }
+
+        p {
+            font-size: 15px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+        }
+
+        strong {
+            color: var(--text-primary);
+        }
+
+        .btn {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 12px 28px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+            0%% {
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4);
+            }
+            70%% {
+                box-shadow: 0 0 0 15px rgba(255, 255, 255, 0);
+            }
+            100%% {
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="badge-container">
+            <div class="badge">%s</div>
+        </div>
+        <h1>%s</h1>
+        <p>%s</p>
+        <button class="btn" onclick="window.close()">Close Window</button>
+    </div>
+</body>
+</html>`, title, themeColor, icon, title, message)
+}
+

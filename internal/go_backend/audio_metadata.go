@@ -1624,6 +1624,9 @@ func extractAnyCoverArtWithHint(filePath, displayNameHint string) ([]byte, strin
 		}
 		return data, mimeType, nil
 
+	case ".wav", ".aiff", ".aif", ".aifc":
+		return extractWAVAIFFCover(filePath)
+
 	default:
 		return nil, "", fmt.Errorf("unsupported format: %s", ext)
 	}

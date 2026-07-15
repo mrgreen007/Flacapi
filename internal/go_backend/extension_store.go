@@ -330,22 +330,26 @@ func (s *extensionStore) getExtensionsWithStatus(forceRefresh bool) ([]storeExte
 	return result, nil
 }
 
-func (s *extensionStore) downloadExtension(extensionID string, destPath string) error {
+func (s *extensionStore) findExtension(extensionID string) (*storeExtension, error) {
 	registry, err := s.fetchRegistry(false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	var ext *storeExtension
 	for _, e := range registry.Extensions {
 		if e.ID == extensionID {
-			ext = &e
-			break
+			ext := e
+			return &ext, nil
 		}
 	}
 
-	if ext == nil {
-		return fmt.Errorf("extension %s not found in store", extensionID)
+	return nil, fmt.Errorf("extension %s not found in store", extensionID)
+}
+
+func (s *extensionStore) downloadExtension(extensionID string, destPath string) error {
+	ext, err := s.findExtension(extensionID)
+	if err != nil {
+		return err
 	}
 
 	if err := requireHTTPSURL(ext.getDownloadURL(), "extension download"); err != nil {

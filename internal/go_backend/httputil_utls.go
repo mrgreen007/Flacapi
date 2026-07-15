@@ -42,9 +42,12 @@ func (t *utlsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
+	opts := GetNetworkCompatibilityOptions()
 	tlsConn := utls.UClient(conn, &utls.Config{
-		ServerName: host,
-		NextProtos: []string{"h2", "http/1.1"},
+		RootCAs:            supplementalRootCAs(),
+		InsecureSkipVerify: opts.InsecureTLS,
+		ServerName:         host,
+		NextProtos:         []string{"h2", "http/1.1"},
 	}, utls.HelloChrome_Auto)
 
 	if err := tlsConn.Handshake(); err != nil {
@@ -141,13 +144,7 @@ func DoRequestWithCloudflareBypass(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 
-	errStr := strings.ToLower(err.Error())
-	tlsRelated := strings.Contains(errStr, "tls") ||
-		strings.Contains(errStr, "handshake") ||
-		strings.Contains(errStr, "certificate") ||
-		strings.Contains(errStr, "connection reset")
-
-	if tlsRelated {
+	if isTLSHandshakeOrResetError(err) {
 		LogDebug("HTTP", "TLS error detected, retrying with Chrome TLS fingerprint: %v", err)
 
 		reqCopy := req.Clone(req.Context())

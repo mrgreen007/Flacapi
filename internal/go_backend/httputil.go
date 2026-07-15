@@ -1,7 +1,9 @@
 package gobackend
 
 import (
+	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +79,7 @@ var sharedTransport = &http.Transport{
 	WriteBufferSize:       64 * 1024,
 	ReadBufferSize:        64 * 1024,
 	DisableCompression:    true,
+	TLSClientConfig:       newTLSCompatibilityConfig(false),
 }
 
 var extensionAPITransport = &http.Transport{
@@ -95,6 +98,7 @@ var extensionAPITransport = &http.Transport{
 	WriteBufferSize:       64 * 1024,
 	ReadBufferSize:        64 * 1024,
 	DisableCompression:    false,
+	TLSClientConfig:       newTLSCompatibilityConfig(false),
 }
 
 var metadataTransport = &http.Transport{
@@ -113,6 +117,7 @@ var metadataTransport = &http.Transport{
 	WriteBufferSize:       32 * 1024,
 	ReadBufferSize:        32 * 1024,
 	DisableCompression:    true,
+	TLSClientConfig:       newTLSCompatibilityConfig(false),
 }
 
 var sharedClient = &http.Client{
@@ -176,17 +181,7 @@ func GetNetworkCompatibilityOptions() NetworkCompatibilityOptions {
 }
 
 func applyTLSCompatibility(transport *http.Transport, insecureTLS bool) {
-	if insecureTLS {
-		cfg := &tls.Config{InsecureSkipVerify: true}
-		if transport.TLSClientConfig != nil {
-			cfg = transport.TLSClientConfig.Clone()
-			cfg.InsecureSkipVerify = true
-		}
-		transport.TLSClientConfig = cfg
-		return
-	}
-
-	transport.TLSClientConfig = nil
+	transport.TLSClientConfig = newTLSCompatibilityConfig(insecureTLS)
 }
 
 type compatibilityTransport struct {
@@ -444,101 +439,143 @@ func (e *ISPBlockingError) Error() string {
 	return fmt.Sprintf("ISP blocking detected for %s: %s", e.Domain, e.Reason)
 }
 
-func IsISPBlocking(err error, requestURL string) *ISPBlockingError {
+// isTransientNetworkError reports retryable transport failures such as
+// timeouts and temporary DNS errors. Permanent DNS misses are excluded.
+func isTransientNetworkError(err error) bool {
 	if err == nil {
-		return nil
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+// isConnectivityFailure reports DNS, dial, timeout, TLS, or truncated transport
+// errors. Application-level API messages are excluded.
+func isConnectivityFailure(err error) bool {
+	return connectivityFailureReason(err) != ""
+}
+
+func connectivityFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "Request timed out - ISP may be throttling"
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "Connection closed unexpectedly - ISP may be blocking"
 	}
 
-	domain := extractDomain(requestURL)
-	errStr := strings.ToLower(err.Error())
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Timeout() {
+			return "Connection timed out - ISP may be blocking access"
+		}
+		if urlErr.Err != nil {
+			if reason := connectivityFailureReason(urlErr.Err); reason != "" {
+				return reason
+			}
+		}
+	}
 
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		if dnsErr.IsNotFound || dnsErr.IsTemporary {
-			return &ISPBlockingError{
-				Domain:      domain,
-				Reason:      "DNS resolution failed - domain may be blocked by ISP",
-				OriginalErr: err,
-			}
+		if dnsErr.IsNotFound || dnsErr.IsTimeout || dnsErr.IsTemporary {
+			return "DNS resolution failed - domain may be blocked by ISP"
 		}
 	}
 
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
-		if opErr.Op == "dial" {
-			var syscallErr syscall.Errno
-			if errors.As(opErr.Err, &syscallErr) {
-				switch syscallErr {
-				case syscall.ECONNREFUSED:
-					return &ISPBlockingError{
-						Domain:      domain,
-						Reason:      "Connection refused - port may be blocked by ISP/firewall",
-						OriginalErr: err,
-					}
-				case syscall.ECONNRESET:
-					return &ISPBlockingError{
-						Domain:      domain,
-						Reason:      "Connection reset - ISP may be intercepting traffic",
-						OriginalErr: err,
-					}
-				case syscall.ETIMEDOUT:
-					return &ISPBlockingError{
-						Domain:      domain,
-						Reason:      "Connection timed out - ISP may be blocking access",
-						OriginalErr: err,
-					}
-				case syscall.ENETUNREACH:
-					return &ISPBlockingError{
-						Domain:      domain,
-						Reason:      "Network unreachable - ISP may be blocking route",
-						OriginalErr: err,
-					}
-				case syscall.EHOSTUNREACH:
-					return &ISPBlockingError{
-						Domain:      domain,
-						Reason:      "Host unreachable - ISP may be blocking destination",
-						OriginalErr: err,
-					}
-				}
+		if opErr.Timeout() {
+			return "Connection timed out - ISP may be blocking access"
+		}
+		var errno syscall.Errno
+		if errors.As(opErr.Err, &errno) {
+			switch errno {
+			case syscall.ECONNREFUSED:
+				return "Connection refused - port may be blocked by ISP/firewall"
+			case syscall.ECONNRESET:
+				return "Connection reset - ISP may be intercepting traffic"
+			case syscall.ETIMEDOUT:
+				return "Connection timed out - ISP may be blocking access"
+			case syscall.ENETUNREACH:
+				return "Network unreachable - ISP may be blocking route"
+			case syscall.EHOSTUNREACH:
+				return "Host unreachable - ISP may be blocking destination"
 			}
 		}
 	}
 
 	var tlsErr *tls.RecordHeaderError
 	if errors.As(err, &tlsErr) {
-		return &ISPBlockingError{
-			Domain:      domain,
-			Reason:      "TLS handshake failed - ISP may be intercepting HTTPS traffic",
-			OriginalErr: err,
+		return "TLS handshake failed - ISP may be intercepting HTTPS traffic"
+	}
+
+	var certErr x509.CertificateInvalidError
+	if errors.As(err, &certErr) {
+		return "Certificate error - ISP may be using MITM proxy"
+	}
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return "Certificate error - ISP may be using MITM proxy"
+	}
+	var unknownAuth x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuth) {
+		return "Certificate error - ISP may be using MITM proxy"
+	}
+
+	return ""
+}
+
+// isTLSHandshakeOrResetError reports TLS handshake/cert failures and TCP resets
+// that should trigger a Chrome fingerprint retry.
+func isTLSHandshakeOrResetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var recordErr *tls.RecordHeaderError
+	if errors.As(err, &recordErr) {
+		return true
+	}
+	var certErr x509.CertificateInvalidError
+	if errors.As(err, &certErr) {
+		return true
+	}
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return true
+	}
+	var unknownAuth x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuth) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var errno syscall.Errno
+		if errors.As(opErr.Err, &errno) && errno == syscall.ECONNRESET {
+			return true
 		}
 	}
+	return false
+}
 
-	blockingPatterns := []struct {
-		pattern string
-		reason  string
-	}{
-		{"connection reset by peer", "Connection reset - ISP may be intercepting traffic"},
-		{"connection refused", "Connection refused - port may be blocked"},
-		{"no such host", "DNS lookup failed - domain may be blocked by ISP"},
-		{"i/o timeout", "Connection timed out - ISP may be blocking access"},
-		{"network is unreachable", "Network unreachable - ISP may be blocking route"},
-		{"tls: ", "TLS error - ISP may be intercepting HTTPS traffic"},
-		{"certificate", "Certificate error - ISP may be using MITM proxy"},
-		{"eof", "Connection closed unexpectedly - ISP may be blocking"},
-		{"context deadline exceeded", "Request timed out - ISP may be throttling"},
+func IsISPBlocking(err error, requestURL string) *ISPBlockingError {
+	if err == nil {
+		return nil
 	}
-
-	for _, bp := range blockingPatterns {
-		if strings.Contains(errStr, bp.pattern) {
-			return &ISPBlockingError{
-				Domain:      domain,
-				Reason:      bp.reason,
-				OriginalErr: err,
-			}
-		}
+	reason := connectivityFailureReason(err)
+	if reason == "" {
+		return nil
 	}
-
-	return nil
+	return &ISPBlockingError{
+		Domain:      extractDomain(requestURL),
+		Reason:      reason,
+		OriginalErr: err,
+	}
 }
 
 func CheckAndLogISPBlocking(err error, requestURL string, tag string) bool {

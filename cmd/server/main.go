@@ -190,6 +190,43 @@ func main() {
 				log.Println("Checking for updated extension payloads and refreshed mirror bundles from GitHub marketplace...")
 				autoUpdateExtensions(absDataDir)
 			}
+
+			// Background worker to monitor and output pending extension verification/CAPTCHA URLs to the terminal console
+			go func() {
+				printed := make(map[string]string)
+				ticker := time.NewTicker(2 * time.Second)
+				for range ticker.C {
+					rawJSON, err := go_backend.GetAllPendingAuthRequestsJSON()
+					if err != nil {
+						continue
+					}
+					var list []struct {
+						ExtensionID string `json:"extension_id"`
+						AuthURL     string `json:"auth_url"`
+					}
+					if err := json.Unmarshal([]byte(rawJSON), &list); err == nil {
+						for _, req := range list {
+							if printed[req.ExtensionID] != req.AuthURL {
+								log.Printf("\n[AUTHENTICATION REQUIRED] Extension '%s' requires verification.\nTo authenticate, please open this URL in your browser and complete the challenge:\n--> %s\n", req.ExtensionID, req.AuthURL)
+								printed[req.ExtensionID] = req.AuthURL
+							}
+						}
+						// Clear from printed map if the request is no longer pending (i.e. successfully authenticated)
+						for extID := range printed {
+							found := false
+							for _, req := range list {
+								if req.ExtensionID == extID {
+									found = true
+									break
+								}
+							}
+							if !found {
+								delete(printed, extID)
+							}
+						}
+					}
+				}
+			}()
 		}
 	}
 
@@ -301,7 +338,13 @@ func main() {
 
 		// Lyrics
 		r.Post("/lyrics/get", api.HandleGetLyrics)
+
+		// Authentication Redirect Callback
+		r.Get("/auth/callback", api.HandleAuthCallback)
 	})
+
+	// Add callback to the root level router as well for easier user access
+	r.Get("/auth/callback", api.HandleAuthCallback)
 
 	// Wrap router with CORS
 	handler := corsHandler(r)
@@ -379,7 +422,8 @@ func copyExtensions(srcDir, destDir string) error {
 		return err
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".spotiflac-ext") {
+		lower := strings.ToLower(entry.Name())
+		if !entry.IsDir() && (strings.HasSuffix(lower, ".spotiflac-ext") || strings.HasSuffix(lower, ".sflx")) {
 			srcFile := filepath.Join(srcDir, entry.Name())
 			destFile := filepath.Join(destDir, entry.Name())
 			if err := copyFile(srcFile, destFile); err != nil {

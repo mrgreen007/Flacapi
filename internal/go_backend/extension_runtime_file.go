@@ -370,7 +370,6 @@ func (r *extensionRuntime) fileDownloadChunked(client *http.Client, urlStr, full
 	var totalSize int64
 	contentRange := probeResp.Header.Get("Content-Range")
 	if contentRange != "" {
-		// Format: "bytes 0-1/12345"
 		if idx := strings.LastIndex(contentRange, "/"); idx >= 0 {
 			sizeStr := contentRange[idx+1:]
 			if sizeStr != "*" {
@@ -457,7 +456,6 @@ func (r *extensionRuntime) fileDownloadChunked(client *http.Client, urlStr, full
 				break // Success
 			}
 
-			// Non-success status
 			io.Copy(io.Discard, chunkResp.Body)
 			chunkResp.Body.Close()
 
@@ -474,7 +472,6 @@ func (r *extensionRuntime) fileDownloadChunked(client *http.Client, urlStr, full
 			})
 		}
 
-		// Read chunk body and write to file
 		chunkWritten := int64(0)
 		for {
 			nr, er := chunkResp.Body.Read(buf)
@@ -663,7 +660,6 @@ func (r *extensionRuntime) fileReadBytes(call goja.FunctionCall) goja.Value {
 			"error":   "offset must be >= 0",
 		})
 	}
-
 	file, err := os.Open(fullPath)
 	if err != nil {
 		return r.vm.ToValue(map[string]interface{}{
@@ -716,6 +712,20 @@ func (r *extensionRuntime) fileReadBytes(call goja.FunctionCall) goja.Value {
 		}
 	}
 
+	if strings.EqualFold(strings.TrimSpace(encoding), "bytes") ||
+		strings.EqualFold(strings.TrimSpace(encoding), "raw") {
+		// Return raw bytes as an ArrayBuffer to avoid base64 encode/decode of
+		// large payloads under the goja interpreter.
+		return r.vm.ToValue(map[string]interface{}{
+			"success":    true,
+			"data":       r.vm.NewArrayBuffer(data),
+			"bytes_read": len(data),
+			"offset":     offset,
+			"size":       size,
+			"eof":        offset+int64(len(data)) >= size,
+		})
+	}
+
 	encoded, err := encodeRuntimeBytes(data, encoding)
 	if err != nil {
 		return r.vm.ToValue(map[string]interface{}{
@@ -733,7 +743,6 @@ func (r *extensionRuntime) fileReadBytes(call goja.FunctionCall) goja.Value {
 		"eof":        offset+int64(len(data)) >= size,
 	})
 }
-
 func (r *extensionRuntime) fileWrite(call goja.FunctionCall) goja.Value {
 	if len(call.Arguments) < 2 {
 		return r.vm.ToValue(map[string]interface{}{

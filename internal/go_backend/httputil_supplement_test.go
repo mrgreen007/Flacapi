@@ -1,11 +1,15 @@
 package gobackend
 
 import (
-	"errors"
+	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -25,11 +29,34 @@ func TestHTTPUtilityHelpers(t *testing.T) {
 	if GetSharedClient() == nil || GetDownloadClient() == nil {
 		t.Fatal("expected shared clients")
 	}
+	if sharedTransport.TLSClientConfig == nil || sharedTransport.TLSClientConfig.RootCAs == nil {
+		t.Fatal("expected supplemental TLS root pool")
+	}
+	block, _ := pem.Decode([]byte(isrgRootX2PEM))
+	if block == nil {
+		t.Fatal("failed to decode ISRG Root X2")
+	}
+	rootX2, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("failed to parse ISRG Root X2: %v", err)
+	}
+	if _, err := rootX2.Verify(x509.VerifyOptions{
+		Roots:     supplementalRootCAs(),
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}); err != nil {
+		t.Fatalf("ISRG Root X2 should verify with supplemental roots: %v", err)
+	}
 	SetNetworkCompatibilityOptions(true, true)
 	if opts := GetNetworkCompatibilityOptions(); !opts.AllowHTTP || !opts.InsecureTLS {
 		t.Fatalf("network opts = %#v", opts)
 	}
+	if !sharedTransport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("expected insecure TLS config to be applied")
+	}
 	SetNetworkCompatibilityOptions(false, false)
+	if sharedTransport.TLSClientConfig == nil || sharedTransport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("expected secure TLS config to be restored")
+	}
 	if !canFallbackToHTTP(&http.Request{Method: http.MethodGet}) {
 		t.Fatal("GET should fallback")
 	}
@@ -106,14 +133,23 @@ func TestHTTPUtilityHelpers(t *testing.T) {
 	if getRetryAfterDuration(&http.Response{Header: http.Header{"Retry-After": []string{"bad"}}}) != 0 {
 		t.Fatal("invalid retry-after should be zero")
 	}
-	if isp := IsISPBlocking(errors.New("connection reset by peer"), "https://example.com/x"); isp == nil || !strings.Contains(isp.Error(), "example.com") {
+	resetErr := &net.OpError{Op: "read", Err: syscall.ECONNRESET}
+	if isp := IsISPBlocking(resetErr, "https://example.com/x"); isp == nil || !strings.Contains(isp.Error(), "example.com") {
 		t.Fatalf("IsISPBlocking = %#v", isp)
 	}
-	if !CheckAndLogISPBlocking(errors.New("i/o timeout"), "https://timeout.example/x", "test") {
+	timeoutErr := &net.OpError{Op: "dial", Err: syscall.ETIMEDOUT}
+	if !CheckAndLogISPBlocking(timeoutErr, "https://timeout.example/x", "test") {
 		t.Fatal("expected logged ISP blocking")
 	}
-	if wrapped := WrapErrorWithISPCheck(errors.New("connection refused"), "https://refused.example/x", "test"); wrapped == nil || !strings.Contains(wrapped.Error(), "ISP blocking") {
+	refusedErr := &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
+	if wrapped := WrapErrorWithISPCheck(refusedErr, "https://refused.example/x", "test"); wrapped == nil || !strings.Contains(wrapped.Error(), "ISP blocking") {
 		t.Fatalf("WrapErrorWithISPCheck = %v", wrapped)
+	}
+	if !isTransientNetworkError(context.DeadlineExceeded) || isTransientNetworkError(&net.DNSError{IsNotFound: true}) {
+		t.Fatal("isTransientNetworkError mismatch")
+	}
+	if !isConnectivityFailure(&net.DNSError{IsNotFound: true}) || !isConnectivityFailure(context.DeadlineExceeded) {
+		t.Fatal("isConnectivityFailure mismatch")
 	}
 	if WrapErrorWithISPCheck(nil, "", "test") != nil {
 		t.Fatal("nil wrap should stay nil")
