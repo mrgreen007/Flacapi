@@ -314,7 +314,6 @@ func marshalAPETag(tag *APETag) ([]byte, error) {
 	footerFlags := uint32(1 << 31)
 	footer := buildAPEHeaderFooter(version, tagSize, itemCount, footerFlags)
 
-	// Final layout: header + items + footer
 	result := make([]byte, 0, len(header)+len(itemsData)+len(footer))
 	result = append(result, header...)
 	result = append(result, itemsData...)

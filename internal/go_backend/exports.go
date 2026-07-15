@@ -283,6 +283,7 @@ type DownloadRequest struct {
 	PostProcessingEnabled       bool   `json:"post_processing_enabled,omitempty"`
 	TidalHighFormat             string `json:"tidal_high_format,omitempty"`
 	TrackNumber                 int    `json:"track_number"`
+	PlaylistPosition            int    `json:"playlist_position,omitempty"`
 	DiscNumber                  int    `json:"disc_number"`
 	TotalTracks                 int    `json:"total_tracks"`
 	TotalDiscs                  int    `json:"total_discs,omitempty"`
@@ -310,6 +311,7 @@ type DownloadResponse struct {
 	FilePath                    string                  `json:"file_path,omitempty"`
 	Error                       string                  `json:"error,omitempty"`
 	ErrorType                   string                  `json:"error_type,omitempty"`
+	RetryAfterSeconds           int                     `json:"retry_after_seconds,omitempty"`
 	AlreadyExists               bool                    `json:"already_exists,omitempty"`
 	ActualBitDepth              int                     `json:"actual_bit_depth,omitempty"`
 	ActualSampleRate            int                     `json:"actual_sample_rate,omitempty"`
@@ -379,6 +381,7 @@ type reEnrichRequest struct {
 	CoverURL      string   `json:"cover_url"`
 	MaxQuality    bool     `json:"max_quality"`
 	EmbedLyrics   bool     `json:"embed_lyrics"`
+	LyricsMode    string   `json:"lyrics_mode,omitempty"`
 	ArtistTagMode string   `json:"artist_tag_mode,omitempty"`
 	SpotifyID     string   `json:"spotify_id"`
 	TrackName     string   `json:"track_name"`
@@ -412,6 +415,21 @@ func (r *reEnrichRequest) shouldUpdateField(field string) bool {
 		}
 	}
 	return false
+}
+
+// lyricsEmbedEnabled reports whether lyrics should be written into the audio
+// file's tags. It mirrors the download path semantics: 'embed' and 'both' embed,
+// 'external' does not. An empty mode keeps the legacy behavior (embed) so older
+// callers that do not send lyrics_mode are unaffected.
+func (r *reEnrichRequest) lyricsEmbedEnabled() bool {
+	return strings.ToLower(strings.TrimSpace(r.LyricsMode)) != "external"
+}
+
+// lyricsSidecarEnabled reports whether a .lrc sidecar file should be written
+// next to the audio file. Only 'external' and 'both' request a sidecar.
+func (r *reEnrichRequest) lyricsSidecarEnabled() bool {
+	mode := strings.ToLower(strings.TrimSpace(r.LyricsMode))
+	return mode == "external" || mode == "both"
 }
 
 func applyReEnrichTrackMetadata(req *reEnrichRequest, track ExtTrackMetadata) {
@@ -578,7 +596,7 @@ func buildReEnrichFFmpegMetadata(req *reEnrichRequest, lyricsLRC string) map[str
 		}
 	}
 	if req.shouldUpdateField("lyrics") {
-		if lyricsLRC != "" {
+		if lyricsLRC != "" && req.lyricsEmbedEnabled() {
 			metadata["LYRICS"] = lyricsLRC
 			metadata["UNSYNCEDLYRICS"] = lyricsLRC
 		}
@@ -594,12 +612,24 @@ func selectBestReEnrichTrack(req reEnrichRequest, tracks []ExtTrackMetadata) *Ex
 	downloadReq := reEnrichDownloadRequest(req)
 	currentISRC := strings.TrimSpace(req.ISRC)
 	currentAlbum := strings.TrimSpace(req.AlbumName)
+	effectiveTrackName := req.TrackName
+	if isPlaceholderReEnrichValue(effectiveTrackName) {
+		effectiveTrackName = ""
+	}
+	effectiveArtistName := req.ArtistName
+	if isPlaceholderReEnrichValue(effectiveArtistName) {
+		effectiveArtistName = ""
+	}
 	var best *ExtTrackMetadata
 	bestScore := -1 << 30
 
 	for i := range tracks {
 		track := &tracks[i]
 		score := 0
+		exactISRCMatch := currentISRC != "" && strings.EqualFold(currentISRC, strings.TrimSpace(track.ISRC))
+		titleMatches := effectiveTrackName != "" && track.Name != "" && titlesMatch(effectiveTrackName, track.Name)
+		artistMatches := effectiveArtistName != "" && track.Artists != "" && artistsMatch(effectiveArtistName, track.Artists)
+		albumMatches := currentAlbum != "" && track.AlbumName != "" && titlesMatch(currentAlbum, track.AlbumName)
 
 		resolved := resolvedTrackInfo{
 			Title:      track.Name,
@@ -607,22 +637,39 @@ func selectBestReEnrichTrack(req reEnrichRequest, tracks []ExtTrackMetadata) *Ex
 			ISRC:       track.ISRC,
 			Duration:   track.DurationMS / 1000,
 		}
-		if trackMatchesRequest(downloadReq, resolved, "ReEnrich") {
+		verified := trackMatchesRequest(downloadReq, resolved, "ReEnrich")
+
+		if !exactISRCMatch {
+			if effectiveTrackName != "" && !titleMatches {
+				continue
+			}
+			if effectiveArtistName != "" && !artistMatches {
+				continue
+			}
+			if effectiveTrackName == "" && effectiveArtistName == "" && currentAlbum != "" && !albumMatches {
+				continue
+			}
+			if effectiveTrackName == "" && effectiveArtistName == "" && currentAlbum == "" && !verified {
+				continue
+			}
+		}
+
+		if verified {
 			score += 2000
 		}
 
-		if currentISRC != "" && strings.EqualFold(currentISRC, strings.TrimSpace(track.ISRC)) {
+		if exactISRCMatch {
 			score += 10000
 		}
-		if req.TrackName != "" && track.Name != "" && titlesMatch(req.TrackName, track.Name) {
+		if titleMatches {
 			score += 400
 		}
-		if req.ArtistName != "" && track.Artists != "" && artistsMatch(req.ArtistName, track.Artists) {
+		if artistMatches {
 			score += 320
 		}
 		if currentAlbum != "" && track.AlbumName != "" {
 			switch {
-			case titlesMatch(currentAlbum, track.AlbumName):
+			case albumMatches:
 				score += 120
 			case strings.Contains(strings.ToLower(track.AlbumName), strings.ToLower(currentAlbum)),
 				strings.Contains(strings.ToLower(currentAlbum), strings.ToLower(track.AlbumName)):
@@ -1115,6 +1162,8 @@ func ReadFileMetadata(filePath string) (string, error) {
 	isApe := strings.HasSuffix(lower, ".ape")
 	isWv := strings.HasSuffix(lower, ".wv")
 	isMpc := strings.HasSuffix(lower, ".mpc")
+	isWav := strings.HasSuffix(lower, ".wav")
+	isAiff := strings.HasSuffix(lower, ".aiff") || strings.HasSuffix(lower, ".aif") || strings.HasSuffix(lower, ".aifc")
 
 	result := map[string]interface{}{
 		"title":        "",
@@ -1331,7 +1380,6 @@ func ReadFileMetadata(filePath string) (string, error) {
 	} else if isApe || isWv || isMpc {
 		result["format"] = strings.TrimPrefix(filepath.Ext(filePath), ".")
 		result["audio_codec"] = result["format"]
-		// APE, WavPack, Musepack: read APEv2 tags
 		apeTag, apeErr := ReadAPETags(filePath)
 		if apeErr == nil && apeTag != nil {
 			meta := APETagToAudioMetadata(apeTag)
@@ -1360,6 +1408,51 @@ func ReadFileMetadata(filePath string) (string, error) {
 				result["replaygain_album_gain"] = meta.ReplayGainAlbumGain
 				result["replaygain_album_peak"] = meta.ReplayGainAlbumPeak
 			}
+		}
+	} else if isWav || isAiff {
+		var meta *AudioMetadata
+		var quality *WAVQuality
+		var qualityErr error
+		if isAiff {
+			result["format"] = "aiff"
+			result["audio_codec"] = "pcm"
+			meta, _ = ReadAIFFTags(filePath)
+			quality, qualityErr = GetAIFFQuality(filePath)
+		} else {
+			result["format"] = "wav"
+			result["audio_codec"] = "pcm"
+			meta, _ = ReadWAVTags(filePath)
+			quality, qualityErr = GetWAVQuality(filePath)
+		}
+		if meta != nil {
+			result["title"] = meta.Title
+			result["artist"] = meta.Artist
+			result["album"] = meta.Album
+			result["album_artist"] = meta.AlbumArtist
+			result["date"] = meta.Date
+			if meta.Date == "" {
+				result["date"] = meta.Year
+			}
+			result["track_number"] = meta.TrackNumber
+			result["total_tracks"] = meta.TotalTracks
+			result["disc_number"] = meta.DiscNumber
+			result["total_discs"] = meta.TotalDiscs
+			result["isrc"] = meta.ISRC
+			result["lyrics"] = meta.Lyrics
+			result["genre"] = meta.Genre
+			result["label"] = meta.Label
+			result["copyright"] = meta.Copyright
+			result["composer"] = meta.Composer
+			result["comment"] = meta.Comment
+			result["replaygain_track_gain"] = meta.ReplayGainTrackGain
+			result["replaygain_track_peak"] = meta.ReplayGainTrackPeak
+			result["replaygain_album_gain"] = meta.ReplayGainAlbumGain
+			result["replaygain_album_peak"] = meta.ReplayGainAlbumPeak
+		}
+		if qualityErr == nil && quality != nil {
+			result["bit_depth"] = quality.BitDepth
+			result["sample_rate"] = quality.SampleRate
+			result["duration"] = quality.Duration
 		}
 	} else {
 		return "", fmt.Errorf("unsupported file format: %s", filePath)
@@ -1418,6 +1511,48 @@ func ScanCueSheetForLibraryWithCoverCacheKey(cuePath, audioDir, virtualPathPrefi
 	return string(jsonBytes), nil
 }
 
+// WriteM4AFreeformTags writes ISRC and label into an M4A/MP4 file as iTunes
+// freeform atoms. FFmpeg's MP4 muxer ignores these keys, so they must be
+// written natively after the FFmpeg metadata pass for the values to persist.
+// Only keys present in the JSON are touched; an empty value clears the tag.
+func WriteM4AFreeformTags(filePath, metadataJSON string) (string, error) {
+	var fields map[string]string
+	if err := json.Unmarshal([]byte(metadataJSON), &fields); err != nil {
+		return "", fmt.Errorf("invalid metadata JSON: %w", err)
+	}
+
+	if err := EditM4AFreeformText(filePath, fields); err != nil {
+		return "", fmt.Errorf("failed to write M4A freeform tags: %w", err)
+	}
+
+	resp := map[string]any{"success": true, "method": "native_m4a_freeform"}
+	jsonBytes, _ := json.Marshal(resp)
+	return string(jsonBytes), nil
+}
+
+// EnsureAC4Config normalizes a decrypted AC-4 file to a standards-compliant ISO
+// MP4 and injects the dac4 configuration box copied from sourcePath. No-op when
+// the file is not AC-4.
+func EnsureAC4Config(filePath, sourcePath string) (string, error) {
+	if err := EnsureAC4ConfigBox(filePath, sourcePath); err != nil {
+		return "", fmt.Errorf("failed to finalize AC-4 container: %w", err)
+	}
+	return `{"success":true}`, nil
+}
+
+// WriteAC4Metadata writes iTunes-style metadata into an AC-4 MP4. The JSON
+// "handled" field reports whether the file was AC-4 (true) so the caller can
+// skip the FFmpeg metadata pass that would re-wrap it as QuickTime.
+func WriteAC4Metadata(filePath, metadataJSON, coverPath string) (string, error) {
+	handled, err := WriteAC4MetadataIfApplicable(filePath, metadataJSON, coverPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to write AC-4 metadata: %w", err)
+	}
+	resp := map[string]any{"success": true, "handled": handled}
+	jsonBytes, _ := json.Marshal(resp)
+	return string(jsonBytes), nil
+}
+
 // EditFileMetadata writes audio file tags: FLAC via native Go library, MP3/Opus returns map for Dart/FFmpeg.
 func EditFileMetadata(filePath, metadataJSON string) (string, error) {
 	var fields map[string]string
@@ -1429,6 +1564,8 @@ func EditFileMetadata(filePath, metadataJSON string) (string, error) {
 	isFlac := strings.HasSuffix(lower, ".flac")
 	isApeFile := strings.HasSuffix(lower, ".ape") || strings.HasSuffix(lower, ".wv") || strings.HasSuffix(lower, ".mpc")
 	isM4AFile := strings.HasSuffix(lower, ".m4a") || strings.HasSuffix(lower, ".mp4") || strings.HasSuffix(lower, ".m4b")
+	isWavFile := strings.HasSuffix(lower, ".wav")
+	isAiffFile := strings.HasSuffix(lower, ".aiff") || strings.HasSuffix(lower, ".aif") || strings.HasSuffix(lower, ".aifc")
 	coverPath := strings.TrimSpace(fields["cover_path"])
 
 	if hasOnlyM4AReplayGainFields(fields) && (isM4AFile || isMP4ContainerFile(filePath)) {
@@ -1457,7 +1594,24 @@ func EditFileMetadata(filePath, metadataJSON string) (string, error) {
 		return string(jsonBytes), nil
 	}
 
-	// APE/WV/MPC: write APEv2 tags natively
+	// WAV / AIFF: write tags into an embedded ID3v2.4 chunk natively.
+	if isWavFile {
+		if err := WriteWAVTags(filePath, fields); err != nil {
+			return "", fmt.Errorf("failed to write WAV metadata: %w", err)
+		}
+		resp := map[string]any{"success": true, "method": "native_wav"}
+		jsonBytes, _ := json.Marshal(resp)
+		return string(jsonBytes), nil
+	}
+	if isAiffFile {
+		if err := WriteAIFFTags(filePath, fields); err != nil {
+			return "", fmt.Errorf("failed to write AIFF metadata: %w", err)
+		}
+		resp := map[string]any{"success": true, "method": "native_aiff"}
+		jsonBytes, _ := json.Marshal(resp)
+		return string(jsonBytes), nil
+	}
+
 	if isApeFile {
 		trackNum := 0
 		totalTracks := 0
@@ -1706,9 +1860,13 @@ func GetLyricsLRCWithSource(spotifyID, trackName, artistName string, filePath st
 	if filePath != "" {
 		lyrics, err := ExtractLyrics(filePath)
 		if err == nil && lyrics != "" {
+			source := extractLyricsSourceFromLRC(lyrics)
+			if source == "" {
+				source = "Embedded"
+			}
 			result := map[string]interface{}{
 				"lyrics":       lyrics,
-				"source":       "Embedded",
+				"source":       source,
 				"sync_type":    "EMBEDDED",
 				"instrumental": false,
 			}
@@ -1911,9 +2069,15 @@ func normalizeExtensionTrackMetadataMap(
 		"artists":       track.Artists,
 		"album_name":    track.AlbumName,
 		"album_artist":  track.AlbumArtist,
+		"album_id":      track.AlbumID,
+		"album_url":     track.AlbumURL,
+		"artist_id":     track.ArtistID,
+		"artist_url":    track.ArtistURL,
+		"external_urls": track.ExternalURL,
 		"duration_ms":   track.DurationMS,
 		"images":        coverURL,
 		"cover_url":     coverURL,
+		"preview_url":   track.PreviewURL,
 		"release_date":  track.ReleaseDate,
 		"track_number":  trackNum,
 		"total_tracks":  track.TotalTracks,
@@ -1942,9 +2106,12 @@ func normalizeExtensionAlbumInfoMap(album *ExtAlbumMetadata) map[string]interfac
 		"artist_id":    album.ArtistID,
 		"images":       album.CoverURL,
 		"cover_url":    album.CoverURL,
+		"header_image": album.HeaderImage,
+		"header_video": album.HeaderVideo,
 		"release_date": album.ReleaseDate,
 		"total_tracks": album.TotalTracks,
 		"album_type":   album.AlbumType,
+		"audio_traits": album.AudioTraits,
 		"provider_id":  album.ProviderID,
 	}
 }
@@ -2029,11 +2196,13 @@ func getExtensionProviderMetadataResponse(
 
 		return map[string]interface{}{
 			"playlist_info": map[string]interface{}{
-				"id":          playlist.ID,
-				"name":        playlist.Name,
-				"images":      playlist.CoverURL,
-				"cover_url":   playlist.CoverURL,
-				"provider_id": playlist.ProviderID,
+				"id":           playlist.ID,
+				"name":         playlist.Name,
+				"images":       playlist.CoverURL,
+				"cover_url":    playlist.CoverURL,
+				"header_image": playlist.HeaderImage,
+				"header_video": playlist.HeaderVideo,
+				"provider_id":  playlist.ProviderID,
 				"owner": map[string]interface{}{
 					"name":   playlist.Artists,
 					"images": playlist.CoverURL,
@@ -2062,6 +2231,7 @@ func getExtensionProviderMetadataResponse(
 				"images":       firstNonEmptyTrimmed(artist.HeaderImage, artist.ImageURL),
 				"cover_url":    artist.ImageURL,
 				"header_image": artist.HeaderImage,
+				"header_video": artist.HeaderVideo,
 				"provider_id":  artist.ProviderID,
 			},
 			"albums": albums,
@@ -2111,6 +2281,16 @@ func GetProviderMetadataJSON(providerID, resourceType, resourceID string) (strin
 
 	switch strings.ToLower(trimmedProviderID) {
 	case "deezer":
+		if response, ok, err := getEnabledExtensionProviderMetadataResponse(trimmedProviderID, resourceType, resourceID); ok || err != nil {
+			if err != nil {
+				return "", err
+			}
+			jsonBytes, err := json.Marshal(response)
+			if err != nil {
+				return "", err
+			}
+			return string(jsonBytes), nil
+		}
 		return GetDeezerMetadata(resourceType, resourceID)
 	default:
 		response, err := getExtensionProviderMetadataResponse(trimmedProviderID, resourceType, resourceID)
@@ -2124,6 +2304,19 @@ func GetProviderMetadataJSON(providerID, resourceType, resourceID string) (strin
 		}
 		return string(jsonBytes), nil
 	}
+}
+
+func getEnabledExtensionProviderMetadataResponse(providerID, resourceType, resourceID string) (map[string]interface{}, bool, error) {
+	manager := getExtensionManager()
+	ext, err := manager.GetExtension(providerID)
+	if err != nil || ext == nil || !ext.Enabled || !ext.Manifest.IsMetadataProvider() {
+		return nil, false, nil
+	}
+	response, err := getExtensionProviderMetadataResponse(providerID, resourceType, resourceID)
+	if err != nil {
+		return nil, true, err
+	}
+	return response, true, nil
 }
 
 func GetDeezerExtendedMetadata(trackID string) (string, error) {
@@ -2329,37 +2522,7 @@ func GetTidalURLFromDeezerTrack(deezerTrackID string) (string, error) {
 }
 
 func errorResponse(msg string) (string, error) {
-	errorType := "unknown"
-	lowerMsg := strings.ToLower(msg)
-
-	if strings.Contains(lowerMsg, "isp blocking") ||
-		strings.Contains(lowerMsg, "try using vpn") ||
-		strings.Contains(lowerMsg, "change dns") {
-		errorType = "isp_blocked"
-	} else if strings.Contains(lowerMsg, "cancel") {
-		errorType = "cancelled"
-	} else if strings.Contains(lowerMsg, "permission") ||
-		strings.Contains(lowerMsg, "operation not permitted") ||
-		strings.Contains(lowerMsg, "access denied") ||
-		strings.Contains(lowerMsg, "failed to create file") ||
-		strings.Contains(lowerMsg, "failed to create directory") {
-		errorType = "permission"
-	} else if strings.Contains(lowerMsg, "not found") ||
-		strings.Contains(lowerMsg, "not available") ||
-		strings.Contains(lowerMsg, "no results") ||
-		strings.Contains(lowerMsg, "track not found") ||
-		strings.Contains(lowerMsg, "all services failed") {
-		errorType = "not_found"
-	} else if strings.Contains(lowerMsg, "rate limit") ||
-		strings.Contains(lowerMsg, "429") ||
-		strings.Contains(lowerMsg, "too many requests") {
-		errorType = "rate_limit"
-	} else if strings.Contains(lowerMsg, "network") ||
-		strings.Contains(lowerMsg, "connection") ||
-		strings.Contains(lowerMsg, "timeout") ||
-		strings.Contains(lowerMsg, "dial") {
-		errorType = "network"
-	}
+	errorType := classifyDownloadErrorType(msg)
 
 	resp := DownloadResponse{
 		Success:   false,
@@ -2368,6 +2531,61 @@ func errorResponse(msg string) (string, error) {
 	}
 	jsonBytes, _ := json.Marshal(resp)
 	return string(jsonBytes), nil
+}
+
+func classifyDownloadErrorType(msg string) string {
+	lowerMsg := strings.ToLower(msg)
+
+	if strings.Contains(lowerMsg, "isp blocking") ||
+		strings.Contains(lowerMsg, "try using vpn") ||
+		strings.Contains(lowerMsg, "change dns") {
+		return "isp_blocked"
+	} else if strings.Contains(lowerMsg, "cancel") {
+		return "cancelled"
+	} else if strings.Contains(lowerMsg, "verify_required") ||
+		strings.Contains(lowerMsg, "verification_required") ||
+		strings.Contains(lowerMsg, "verification required") ||
+		strings.Contains(lowerMsg, "needs verification") ||
+		strings.Contains(lowerMsg, "session is not authenticated") ||
+		strings.Contains(lowerMsg, "signed session is not authenticated") ||
+		strings.Contains(lowerMsg, "unauthorized") ||
+		strings.Contains(lowerMsg, "precondition required") ||
+		messageHasHTTPStatusCode(lowerMsg, "401") ||
+		messageHasHTTPStatusCode(lowerMsg, "428") {
+		return "verification_required"
+	} else if strings.Contains(lowerMsg, "rate limit") ||
+		messageHasHTTPStatusCode(lowerMsg, "429") ||
+		strings.Contains(lowerMsg, "too many requests") {
+		return "rate_limit"
+	} else if strings.Contains(lowerMsg, "permission") ||
+		strings.Contains(lowerMsg, "operation not permitted") ||
+		strings.Contains(lowerMsg, "access denied") ||
+		strings.Contains(lowerMsg, "failed to create file") ||
+		strings.Contains(lowerMsg, "failed to create directory") {
+		return "permission"
+	} else if strings.Contains(lowerMsg, "not found") ||
+		strings.Contains(lowerMsg, "not available") ||
+		strings.Contains(lowerMsg, "no results") ||
+		strings.Contains(lowerMsg, "track not found") ||
+		strings.Contains(lowerMsg, "all services failed") {
+		return "not_found"
+	} else if strings.Contains(lowerMsg, "network") ||
+		strings.Contains(lowerMsg, "connection") ||
+		strings.Contains(lowerMsg, "timeout") ||
+		strings.Contains(lowerMsg, "dial") {
+		return "network"
+	}
+
+	return "unknown"
+}
+
+func messageHasHTTPStatusCode(lowerMsg, code string) bool {
+	return strings.Contains(lowerMsg, "http "+code) ||
+		strings.Contains(lowerMsg, "http status "+code) ||
+		strings.Contains(lowerMsg, "status "+code) ||
+		strings.Contains(lowerMsg, code+" for ") ||
+		strings.Contains(lowerMsg, code+":") ||
+		strings.Contains(lowerMsg, code+";")
 }
 
 func DownloadCoverToFile(coverURL string, outputPath string, maxQuality bool) error {
@@ -2522,8 +2740,6 @@ func ReEnrichFile(requestJSON string) (string, error) {
 
 	GoLog("[ReEnrich] Starting re-enrichment for: %s\n", req.FilePath)
 
-	// When search_online is true, search for metadata from internet using the
-	// configured metadata-provider priority.
 	if req.SearchOnline {
 		found := false
 
@@ -2692,7 +2908,6 @@ func ReEnrichFile(requestJSON string) (string, error) {
 	}
 
 	if isFlac {
-		// Native Go FLAC metadata embedding.
 		// Only populate Metadata fields for selected update groups; empty/zero
 		// values cause EmbedMetadata's setComment() to skip those tags,
 		// preserving whatever is already in the file.
@@ -2716,7 +2931,9 @@ func ReEnrichFile(requestJSON string) (string, error) {
 			metadata.ISRC = req.ISRC
 		}
 		if req.shouldUpdateField("lyrics") {
-			metadata.Lyrics = lyricsLRC
+			if req.lyricsEmbedEnabled() {
+				metadata.Lyrics = lyricsLRC
+			}
 		}
 		if req.shouldUpdateField("extra") {
 			metadata.Genre = req.Genre
@@ -2751,6 +2968,11 @@ func ReEnrichFile(requestJSON string) (string, error) {
 			"method":            "native",
 			"success":           true,
 			"enriched_metadata": enrichedMeta,
+			"lyrics":            lyricsLRC,
+			"write_external_lrc": req.EmbedLyrics &&
+				req.shouldUpdateField("lyrics") &&
+				req.lyricsSidecarEnabled() &&
+				strings.TrimSpace(lyricsLRC) != "",
 		}
 		jsonBytes, _ := json.Marshal(result)
 		return string(jsonBytes), nil
@@ -2766,6 +2988,10 @@ func ReEnrichFile(requestJSON string) (string, error) {
 		"lyrics":            lyricsLRC,
 		"enriched_metadata": enrichedMeta,
 		"metadata":          ffmpegMetadata,
+		"write_external_lrc": req.EmbedLyrics &&
+			req.shouldUpdateField("lyrics") &&
+			req.lyricsSidecarEnabled() &&
+			strings.TrimSpace(lyricsLRC) != "",
 	}
 
 	jsonBytes, _ := json.Marshal(result)
@@ -3061,7 +3287,7 @@ func InvokeExtensionActionJSON(extensionID, actionName string) (string, error) {
 }
 
 func GetExtensionPendingAuthJSON(extensionID string) (string, error) {
-	req := GetPendingAuthRequest(extensionID)
+	req := ensureExtensionPendingAuthRequest(extensionID)
 	if req == nil {
 		return "", nil
 	}
@@ -3080,8 +3306,46 @@ func GetExtensionPendingAuthJSON(extensionID string) (string, error) {
 	return string(jsonBytes), nil
 }
 
+func ensureExtensionPendingAuthRequest(extensionID string) *PendingAuthRequest {
+	extensionID = strings.TrimSpace(extensionID)
+	if extensionID == "" {
+		return nil
+	}
+
+	if req := GetPendingAuthRequest(extensionID); req != nil {
+		return req
+	}
+
+	manager := getExtensionManager()
+	ext, err := manager.GetExtension(extensionID)
+	if err != nil || ext == nil || !ext.Enabled || ext.Manifest == nil || ext.Manifest.SignedSession == nil {
+		return nil
+	}
+
+	if err := ext.ensureRuntimeReady(); err != nil || ext.runtime == nil {
+		return nil
+	}
+
+	config := signedSessionConfigWithDefaults(ext.Manifest.SignedSession)
+	if config.Namespace == "" || config.BaseURL == "" {
+		return nil
+	}
+	if record, err := ext.runtime.loadSignedSession(config); err == nil {
+		record.SessionID = ""
+		record.SessionSecret = ""
+		record.ExpiresAt = ""
+		_ = ext.runtime.saveSignedSession(config, record)
+	}
+	ext.runtime.startSignedSessionVerification(config, "pending-auth-request")
+	return GetPendingAuthRequest(extensionID)
+}
+
 func SetExtensionAuthCodeByID(extensionID, authCode string) {
 	SetExtensionAuthCode(extensionID, authCode)
+}
+
+func SetExtensionSessionGrantByID(extensionID, grant string) {
+	setPendingSignedSessionGrant(extensionID, grant)
 }
 
 func SetExtensionTokensByID(extensionID, accessToken, refreshToken string, expiresIn int) {
@@ -3250,6 +3514,7 @@ func CustomSearchWithExtensionJSONWithRequestID(extensionID, query string, optio
 			"album_artist":  track.AlbumArtist,
 			"duration_ms":   track.DurationMS,
 			"images":        track.ResolvedCoverURL(),
+			"preview_url":   track.PreviewURL,
 			"release_date":  track.ReleaseDate,
 			"track_number":  track.TrackNumber,
 			"total_tracks":  track.TotalTracks,
@@ -3315,6 +3580,8 @@ func HandleURLWithExtensionJSON(url string) (string, error) {
 		"extension_id": extensionID,
 		"name":         result.Name,
 		"cover_url":    result.CoverURL,
+		"header_image": result.HeaderImage,
+		"header_video": result.HeaderVideo,
 	}
 
 	if result.Track != nil {
@@ -3326,6 +3593,7 @@ func HandleURLWithExtensionJSON(url string) (string, error) {
 			"album_artist": result.Track.AlbumArtist,
 			"duration_ms":  result.Track.DurationMS,
 			"images":       result.Track.ResolvedCoverURL(),
+			"preview_url":  result.Track.PreviewURL,
 			"release_date": result.Track.ReleaseDate,
 			"track_number": result.Track.TrackNumber,
 			"total_tracks": result.Track.TotalTracks,
@@ -3348,6 +3616,7 @@ func HandleURLWithExtensionJSON(url string) (string, error) {
 				"album_artist": track.AlbumArtist,
 				"duration_ms":  track.DurationMS,
 				"images":       track.ResolvedCoverURL(),
+				"preview_url":  track.PreviewURL,
 				"release_date": track.ReleaseDate,
 				"track_number": track.TrackNumber,
 				"total_tracks": track.TotalTracks,
@@ -3369,6 +3638,9 @@ func HandleURLWithExtensionJSON(url string) (string, error) {
 			"name":         result.Album.Name,
 			"artists":      result.Album.Artists,
 			"cover_url":    result.Album.CoverURL,
+			"header_image": result.Album.HeaderImage,
+			"header_video": result.Album.HeaderVideo,
+			"audio_traits": result.Album.AudioTraits,
 			"release_date": result.Album.ReleaseDate,
 			"total_tracks": result.Album.TotalTracks,
 			"album_type":   result.Album.AlbumType,
@@ -3382,6 +3654,7 @@ func HandleURLWithExtensionJSON(url string) (string, error) {
 			"name":         result.Artist.Name,
 			"image_url":    result.Artist.ImageURL,
 			"header_image": result.Artist.HeaderImage,
+			"header_video": result.Artist.HeaderVideo,
 			"listeners":    result.Artist.Listeners,
 			"provider_id":  result.Artist.ProviderID,
 		}
@@ -3441,6 +3714,7 @@ func HandleURLWithExtensionJSON(url string) (string, error) {
 					"album_artist": track.AlbumArtist,
 					"duration_ms":  track.DurationMS,
 					"images":       track.ResolvedCoverURL(),
+					"preview_url":  track.PreviewURL,
 					"release_date": track.ReleaseDate,
 					"track_number": track.TrackNumber,
 					"total_tracks": track.TotalTracks,
@@ -3676,13 +3950,29 @@ func GetStoreCategoriesJSON() (string, error) {
 	return string(jsonBytes), nil
 }
 
-func buildStoreExtensionDestPath(destDir, extensionID string) (string, error) {
+func storeExtensionPackageSuffix(downloadURL string) string {
+	rawPath := downloadURL
+	if parsed, err := url.Parse(downloadURL); err == nil {
+		rawPath = parsed.Path
+	}
+
+	lowerPath := strings.ToLower(rawPath)
+	if strings.HasSuffix(lowerPath, ".sflx") {
+		return ".sflx"
+	}
+	if strings.HasSuffix(lowerPath, ".spotiflac-ext") {
+		return ".spotiflac-ext"
+	}
+	return ".spotiflac-ext"
+}
+
+func buildStoreExtensionDestPath(destDir, extensionID, downloadURL string) (string, error) {
 	if strings.TrimSpace(extensionID) == "" {
 		return "", fmt.Errorf("invalid extension id")
 	}
 
 	safeExtensionID := sanitizeFilename(extensionID)
-	return filepath.Join(destDir, safeExtensionID+".spotiflac-ext"), nil
+	return filepath.Join(destDir, safeExtensionID+storeExtensionPackageSuffix(downloadURL)), nil
 }
 
 func DownloadStoreExtensionJSON(extensionID, destDir string) (string, error) {
@@ -3691,7 +3981,12 @@ func DownloadStoreExtensionJSON(extensionID, destDir string) (string, error) {
 		return "", fmt.Errorf("extension store not initialized")
 	}
 
-	destPath, err := buildStoreExtensionDestPath(destDir, extensionID)
+	ext, err := store.findExtension(extensionID)
+	if err != nil {
+		return "", err
+	}
+
+	destPath, err := buildStoreExtensionDestPath(destDir, extensionID, ext.getDownloadURL())
 	if err != nil {
 		return "", err
 	}
@@ -3756,9 +4051,12 @@ func callExtensionFunctionJSONWithRequestID(extensionID, functionName string, ti
 			if (typeof extension !== 'undefined' && typeof extension.%s === 'function') {
 				return extension.%s();
 			}
+			if (typeof %s === 'function') {
+				return %s();
+			}
 			return null;
 		})()
-	`, functionName, functionName)
+	`, functionName, functionName, functionName, functionName)
 
 	jsStartedAt := time.Now()
 	result, err := RunWithTimeoutContextAndRecover(requestCtx, vm, script, timeout)

@@ -24,7 +24,9 @@ type neteaseSearchResponse struct {
 		} `json:"songs"`
 		SongCount int `json:"songCount"`
 	} `json:"result"`
-	Code int `json:"code"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Msg     string `json:"msg"`
 }
 
 type neteaseLyricsResponse struct {
@@ -85,6 +87,17 @@ func (c *NeteaseClient) SearchSong(trackName, artistName string) (int64, error) 
 	var searchResp neteaseSearchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
 		return 0, fmt.Errorf("failed to decode netease search: %w", err)
+	}
+
+	if searchResp.Code != 0 && searchResp.Code != 200 {
+		message := strings.TrimSpace(searchResp.Message)
+		if message == "" {
+			message = strings.TrimSpace(searchResp.Msg)
+		}
+		if message == "" {
+			message = "unexpected response code"
+		}
+		return 0, fmt.Errorf("netease search unavailable: code %d: %s", searchResp.Code, message)
 	}
 
 	if searchResp.Result.SongCount == 0 || len(searchResp.Result.Songs) == 0 {

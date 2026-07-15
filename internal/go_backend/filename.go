@@ -13,7 +13,7 @@ import (
 var (
 	invalidChars                   = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 	multiUnderscore                = regexp.MustCompile(`_+`)
-	formattedNumberPlaceholderExpr = regexp.MustCompile(`\{(track|disc):([0-9]+)\}`)
+	formattedNumberPlaceholderExpr = regexp.MustCompile(`\{(track|disc|playlist_position|playlistPosition|position):([0-9]+)\}`)
 	dateFormatPlaceholderExpr      = regexp.MustCompile(`\{date:([^{}]+)\}`)
 	yearPattern                    = regexp.MustCompile(`\d{4}`)
 )
@@ -99,6 +99,11 @@ func buildFilenameFromTemplate(template string, metadata map[string]interface{})
 		"{album}":     getString(metadata, "album"),
 		"{track}":     formatTrackNumber(getInt(metadata, "track")),
 		"{track_raw}": formatRawNumber(getInt(metadata, "track")),
+		"{playlist_position}":     formatTrackNumber(getPlaylistPosition(metadata)),
+		"{playlist position}":     formatTrackNumber(getPlaylistPosition(metadata)),
+		"{playlistPosition}":      formatTrackNumber(getPlaylistPosition(metadata)),
+		"{position}":              formatTrackNumber(getPlaylistPosition(metadata)),
+		"{playlist_position_raw}": formatRawNumber(getPlaylistPosition(metadata)),
 		"{year}":      yearValue,
 		"{date}":      dateValue,
 		"{disc}":      formatDiscNumber(getInt(metadata, "disc")),
@@ -120,6 +125,9 @@ func replaceFormattedNumberPlaceholders(template string, metadata map[string]int
 		}
 
 		number := getInt(metadata, parts[1])
+		if parts[1] == "playlist_position" || parts[1] == "playlistPosition" || parts[1] == "position" {
+			number = getPlaylistPosition(metadata)
+		}
 		width, err := strconv.Atoi(parts[2])
 		if err != nil {
 			return ""
@@ -177,6 +185,8 @@ func getInt(m map[string]interface{}, key string) int {
 		candidateKeys = append(candidateKeys, "track_number")
 	case "disc":
 		candidateKeys = append(candidateKeys, "disc_number")
+	case "playlist_position", "playlistPosition", "playlist position", "position":
+		candidateKeys = append(candidateKeys, "playlistPosition", "playlist position", "position")
 	}
 
 	for _, candidate := range candidateKeys {
@@ -198,6 +208,10 @@ func getInt(m map[string]interface{}, key string) int {
 	}
 
 	return 0
+}
+
+func getPlaylistPosition(metadata map[string]interface{}) int {
+	return getInt(metadata, "playlist_position")
 }
 
 func formatTrackNumber(n int) string {

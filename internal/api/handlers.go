@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -675,6 +676,14 @@ func HandleGetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Append any active pending auth requests to help the client auto-authenticate
+	if rawJSON, err := gb.GetAllPendingAuthRequestsJSON(); err == nil {
+		var authList []map[string]interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &authList); err == nil && len(authList) > 0 {
+			resMap["pending_auth"] = authList
+		}
+	}
+
 	resJSON, err := json.Marshal(resMap)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"Marshal Error", "message":"%s"}`, err.Error()), http.StatusInternalServerError)
@@ -1130,3 +1139,117 @@ func isLosslessRequest(q string) bool {
 	upper := strings.ToUpper(strings.TrimSpace(q))
 	return upper == qualityLossless || upper == "HI_RES" || upper == "HI_RES_LOSSLESS"
 }
+
+// AuthCallbackRequest represents the JSON request body for authentication
+type AuthCallbackRequest struct {
+	URL   string `json:"url,omitempty"`
+	Grant string `json:"grant,omitempty"`
+	Code  string `json:"code,omitempty"`
+	State string `json:"state,omitempty"`
+}
+
+// HandleAuthCallback handles the OAuth / signed session grant callback and returns JSON
+func HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	var reqBody AuthCallbackRequest
+	if r.Header.Get("Content-Type") == "application/json" && r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+	}
+
+	grant := r.URL.Query().Get("grant")
+	if grant == "" {
+		grant = r.URL.Query().Get("code")
+	}
+	if grant == "" {
+		grant = reqBody.Grant
+	}
+	if grant == "" {
+		grant = reqBody.Code
+	}
+
+	extID := r.URL.Query().Get("state")
+	if extID == "" {
+		extID = reqBody.State
+	}
+
+	inputURL := r.URL.Query().Get("url")
+	if inputURL == "" {
+		inputURL = reqBody.URL
+	}
+
+	if inputURL != "" {
+		u := strings.TrimSpace(inputURL)
+		if !strings.Contains(u, "://") {
+			if strings.Contains(u, "?") {
+				u = "temp://dummy" + u
+			} else {
+				u = "temp://dummy?" + u
+			}
+		}
+		if parsedPaste, err := url.Parse(u); err == nil {
+			q := parsedPaste.Query()
+			if g := q.Get("grant"); g != "" {
+				grant = g
+			} else if c := q.Get("code"); c != "" {
+				grant = c
+			}
+			if s := q.Get("state"); s != "" {
+				extID = s
+			}
+		}
+		// If grant is still empty, treat the whole pasted string as the raw token directly
+		if grant == "" {
+			cleaned := strings.TrimSpace(inputURL)
+			if cleaned != "" {
+				// Strip any prefix key if they copied the full equation (e.g. grant=gr_...)
+				if strings.HasPrefix(cleaned, "grant=") {
+					grant = strings.TrimPrefix(cleaned, "grant=")
+				} else if strings.HasPrefix(cleaned, "code=") {
+					grant = strings.TrimPrefix(cleaned, "code=")
+				} else {
+					grant = cleaned
+				}
+			}
+		}
+	}
+	
+	// Sanitize extension ID to prevent XSS and path traversal
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+	extID = reg.ReplaceAllString(extID, "")
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if grant == "" || extID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"success":false,"error":"Missing Parameters","message":"Both grant/code and state (extension ID) are required."}`))
+		return
+	}
+
+	gb.SetExtensionSessionGrantByID(extID, grant)
+	_, err := gb.InvokeExtensionActionJSON(extID, "completeGrant")
+	if err != nil {
+		// Fall back to oauth code if not session grant
+		gb.SetExtensionAuthCodeByID(extID, grant)
+		_, err = gb.InvokeExtensionActionJSON(extID, "completeSpotifyLogin")
+	}
+
+	if err != nil {
+		log.Printf("[Authentication Failed] Extension '%s' authentication failed: %v", extID, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		resBytes, _ := json.Marshal(map[string]interface{}{
+			"success": false,
+			"error":   "Authentication Failed",
+			"message": err.Error(),
+		})
+		_, _ = w.Write(resBytes)
+		return
+	}
+
+	log.Printf("[Authentication Success] Extension '%s' successfully authenticated and session keys registered.", extID)
+	w.WriteHeader(http.StatusOK)
+	resBytes, _ := json.Marshal(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Successfully verified and loaded session keys for extension '%s'.", extID),
+	})
+	_, _ = w.Write(resBytes)
+}
+

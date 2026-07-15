@@ -175,7 +175,7 @@ Returns an asynchronous accepted confirmation containing the `itemId` immediatel
 Retrieve the progress status of a specific background download task by passing its `itemId` as a query parameter.
 
 * **Endpoint**: `GET /api/v1/download/progress?itemId=<itemId>`
-* **Response Format**:
+* **Response Format (Normal)**:
   ```json
   {
     "item_id": "dl-1716480000000",
@@ -184,6 +184,51 @@ Retrieve the progress status of a specific background download task by passing i
     "is_downloading": true
   }
   ```
+
+* **Response Format (Verification / CAPTCHA Required)**:
+  If a premium provider (like Tidal or Deezer) halts downloads due to verification checks, the server returns `status: failed` with a `verification_required` error, and appends a `pending_auth` list containing the active challenge URLs:
+  ```json
+  {
+    "item_id": "dl-1716480000000",
+    "status": "failed",
+    "progress": 0.0,
+    "is_downloading": false,
+    "error": "verification_required: verification required",
+    "pending_auth": [
+      {
+        "extension_id": "tidal-web",
+        "auth_url": "https://api.zarz.moe/v2/challenge?cb=spotiflac%3A%2F%2Fsession-grant%3Fcb_version%3Dv2grant%26state%3Dtidal-web&id=chl_..."
+      }
+    ]
+  }
+  ```
+
+> [!TIP]
+> **Manual Verification Callback (API Only)**: 
+> Due to strict whitelist constraints enforced by the gateway server, automatic redirects to local HTTP hosts are blocked. 
+> 1. The client should display a verification button/link using the returned `auth_url`.
+> 2. The user clicks it, completes the CAPTCHA in their browser, and clicks the **"Copy link"** button on the gateway success page.
+> 3. The client hits the API endpoint `/api/v1/auth/callback` to complete the handshake:
+> 
+>    **Single-Parameter GET Pattern (Recommended)**:
+>    ```bash
+>    GET /api/v1/auth/callback?url=spotiflac%3A%2F%2Fsession-grant%3Fcb_version%3Dv2grant%26state%3Ddeezer%26grant%3Dgr_ya1E...
+>    ```
+> 
+>    **Single-Parameter JSON POST Pattern**:
+>    ```json
+>    {
+>      "url": "spotiflac://session-grant?cb_version=v2grant&state=deezer&grant=gr_ya1E..."
+>    }
+>    ```
+> 
+>    **Response Body**:
+>    ```json
+>    {
+>      "success": true,
+>      "message": "Successfully verified and loaded session keys for extension 'deezer'."
+>    }
+>    ```
 
 > [!TIP]
 > **Status Lifecycle**: The status will progress from `preparing` $\rightarrow$ `downloading` $\rightarrow$ `finalizing` (transcoding & tagging) $\rightarrow$ `completed` or `failed`. If the download fails, the response will include an `error` field detailing the failure (e.g. `quality_rejected: Provided stream failed final lossless assertion test` if the provider returned lossy audio when lossless was requested).

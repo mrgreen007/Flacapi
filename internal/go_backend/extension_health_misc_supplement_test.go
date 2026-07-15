@@ -1,8 +1,10 @@
 package gobackend
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -26,6 +28,12 @@ func TestExtensionHealthClassificationAndValidation(t *testing.T) {
 	}
 	if !isExtensionHealthAuthRequired(" unauthorized ") {
 		t.Fatal("expected auth required")
+	}
+	if !isTransientExtensionHealthError(context.DeadlineExceeded) || !isTransientExtensionHealthError(&net.DNSError{IsTimeout: true}) {
+		t.Fatal("expected timeout health errors to be transient")
+	}
+	if !isTransientExtensionHealthError(&net.DNSError{IsNotFound: true}) {
+		t.Fatal("expected health transport lookup errors to be indeterminate")
 	}
 
 	if result := CheckExtensionHealth(nil); result.Status != "offline" {

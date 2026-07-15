@@ -6,7 +6,7 @@ import (
 	"fmt"
 	stdimage "image"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	_ "image/png"
 	"io"
 	"math"
@@ -71,10 +71,82 @@ func detectCoverMIME(coverPath string, coverData []byte) string {
 	return "image/jpeg"
 }
 
+// maxFlacPictureBytes keeps cover art below the 24-bit length field of a FLAC
+// metadata block; go-flac silently truncates oversized blocks into a corrupt file.
+const maxFlacPictureBytes = 16 * 1000 * 1000
+
+// fitCoverForFlac returns cover bytes that fit inside a FLAC PICTURE block,
+// re-encoding and downscaling when needed. Returns false if the data cannot be
+// decoded as an image.
+func fitCoverForFlac(coverData []byte) ([]byte, bool) {
+	if len(coverData) <= maxFlacPictureBytes {
+		return coverData, true
+	}
+
+	img, _, err := stdimage.Decode(bytes.NewReader(coverData))
+	if err != nil {
+		return nil, false
+	}
+
+	for _, quality := range []int{90, 80, 70, 60} {
+		if encoded, ok := encodeJPEGUnder(img, quality, maxFlacPictureBytes); ok {
+			return encoded, true
+		}
+	}
+
+	for _, maxDim := range []int{1500, 1200, 1000, 800} {
+		scaled := downscaleImage(img, maxDim)
+		if encoded, ok := encodeJPEGUnder(scaled, 85, maxFlacPictureBytes); ok {
+			return encoded, true
+		}
+	}
+
+	return nil, false
+}
+
+func encodeJPEGUnder(img stdimage.Image, quality, limit int) ([]byte, bool) {
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, false
+	}
+	if buf.Len() > limit {
+		return nil, false
+	}
+	return buf.Bytes(), true
+}
+
+func downscaleImage(img stdimage.Image, maxDim int) stdimage.Image {
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width <= maxDim && height <= maxDim {
+		return img
+	}
+
+	scale := float64(maxDim) / float64(max(width, height))
+	newWidth := max(1, int(float64(width)*scale))
+	newHeight := max(1, int(float64(height)*scale))
+
+	dst := stdimage.NewRGBA(stdimage.Rect(0, 0, newWidth, newHeight))
+	for y := 0; y < newHeight; y++ {
+		srcY := bounds.Min.Y + int(float64(y)/scale)
+		for x := 0; x < newWidth; x++ {
+			srcX := bounds.Min.X + int(float64(x)/scale)
+			dst.Set(x, y, img.At(srcX, srcY))
+		}
+	}
+	return dst
+}
+
 func buildPictureBlock(coverPath string, coverData []byte) (flac.MetaDataBlock, error) {
 	if len(coverData) == 0 {
 		return flac.MetaDataBlock{}, fmt.Errorf("empty cover data")
 	}
+
+	fitted, ok := fitCoverForFlac(coverData)
+	if !ok {
+		return flac.MetaDataBlock{}, fmt.Errorf("cover too large for FLAC picture block and could not be resized")
+	}
+	coverData = fitted
 
 	mime := detectCoverMIME(coverPath, coverData)
 	picture := &flacpicture.MetadataBlockPicture{
@@ -175,10 +247,11 @@ func EmbedMetadata(filePath string, metadata Metadata, coverPath string) error {
 
 				picBlock, err := buildPictureBlock(coverPath, coverData)
 				if err != nil {
-					return fmt.Errorf("failed to create picture block: %w", err)
+					fmt.Printf("[Metadata] Warning: skipping cover art: %v\n", err)
+				} else {
+					f.Meta = append(f.Meta, &picBlock)
+					fmt.Printf("[Metadata] Cover art embedded successfully (%d bytes)\n", len(coverData))
 				}
-				f.Meta = append(f.Meta, &picBlock)
-				fmt.Printf("[Metadata] Cover art embedded successfully (%d bytes)\n", len(coverData))
 			}
 		} else {
 			fmt.Printf("[Metadata] Warning: Cover file does not exist: %s\n", coverPath)
@@ -230,10 +303,11 @@ func EmbedMetadataWithCoverData(filePath string, metadata Metadata, coverData []
 
 		picBlock, err := buildPictureBlock("", coverData)
 		if err != nil {
-			return fmt.Errorf("failed to create picture block: %w", err)
+			fmt.Printf("[Metadata] Warning: skipping cover art: %v\n", err)
+		} else {
+			f.Meta = append(f.Meta, &picBlock)
+			fmt.Printf("[Metadata] Cover art embedded successfully (%d bytes)\n", len(coverData))
 		}
-		f.Meta = append(f.Meta, &picBlock)
-		fmt.Printf("[Metadata] Cover art embedded successfully (%d bytes)\n", len(coverData))
 	}
 
 	return f.Save(filePath)
@@ -906,6 +980,32 @@ func ExtractLyrics(filePath string) (string, error) {
 		return extractLyricsFromSidecarLRC(filePath)
 	}
 
+	if strings.HasSuffix(lower, ".wav") {
+		meta, err := ReadWAVTags(filePath)
+		if err == nil && meta != nil {
+			if strings.TrimSpace(meta.Lyrics) != "" {
+				return meta.Lyrics, nil
+			}
+			if looksLikeEmbeddedLyrics(meta.Comment) {
+				return meta.Comment, nil
+			}
+		}
+		return extractLyricsFromSidecarLRC(filePath)
+	}
+
+	if strings.HasSuffix(lower, ".aiff") || strings.HasSuffix(lower, ".aif") || strings.HasSuffix(lower, ".aifc") {
+		meta, err := ReadAIFFTags(filePath)
+		if err == nil && meta != nil {
+			if strings.TrimSpace(meta.Lyrics) != "" {
+				return meta.Lyrics, nil
+			}
+			if looksLikeEmbeddedLyrics(meta.Comment) {
+				return meta.Comment, nil
+			}
+		}
+		return extractLyricsFromSidecarLRC(filePath)
+	}
+
 	return extractLyricsFromSidecarLRC(filePath)
 }
 
@@ -1097,9 +1197,7 @@ func findM4AIlstAtom(f *os.File, fileSize int64) (atomHeader, error) {
 		udtaBodyStart := udta.offset + udta.headerSize
 		udtaBodySize := udta.size - udta.headerSize
 		if meta, ok2, _ := findAtomInRange(f, udtaBodyStart, udtaBodySize, "meta", fileSize); ok2 {
-			metaBodyStart := meta.offset + meta.headerSize + 4
-			metaBodySize := meta.size - meta.headerSize - 4
-			if ilst, ok3, _ := findAtomInRange(f, metaBodyStart, metaBodySize, "ilst", fileSize); ok3 {
+			if ilst, ok3 := findIlstInMeta(f, meta, fileSize); ok3 {
 				return ilst, nil
 			}
 		}
@@ -1107,14 +1205,32 @@ func findM4AIlstAtom(f *os.File, fileSize int64) (atomHeader, error) {
 
 	// Path 2: moov > meta > ilst (no udta wrapper)
 	if meta, ok, _ := findAtomInRange(f, moovBodyStart, moovBodySize, "meta", fileSize); ok {
-		metaBodyStart := meta.offset + meta.headerSize + 4
-		metaBodySize := meta.size - meta.headerSize - 4
-		if ilst, ok2, _ := findAtomInRange(f, metaBodyStart, metaBodySize, "ilst", fileSize); ok2 {
+		if ilst, ok2 := findIlstInMeta(f, meta, fileSize); ok2 {
 			return ilst, nil
 		}
 	}
 
 	return atomHeader{}, fmt.Errorf("ilst not found (tried moov>udta>meta>ilst and moov>meta>ilst)")
+}
+
+// findIlstInMeta locates the ilst atom inside a meta atom, handling both
+// layouts: ISO-BMFF (4-byte version/flags before the child atoms, written by
+// FFmpeg's mp4 muxer) and QuickTime (no version/flags, written by the mov muxer
+// used for AC-4 passthrough).
+func findIlstInMeta(f *os.File, meta atomHeader, fileSize int64) (atomHeader, bool) {
+	// ISO-BMFF: skip the 4-byte version/flags that precede the child atoms.
+	isoStart := meta.offset + meta.headerSize + 4
+	isoSize := meta.size - meta.headerSize - 4
+	if ilst, ok, _ := findAtomInRange(f, isoStart, isoSize, "ilst", fileSize); ok {
+		return ilst, true
+	}
+	// QuickTime: child atoms begin immediately after the meta header.
+	qtStart := meta.offset + meta.headerSize
+	qtSize := meta.size - meta.headerSize
+	if ilst, ok, _ := findAtomInRange(f, qtStart, qtSize, "ilst", fileSize); ok {
+		return ilst, true
+	}
+	return atomHeader{}, false
 }
 
 func readM4ADataAtomPayload(f *os.File, dataAtom atomHeader) ([]byte, error) {
@@ -1254,9 +1370,7 @@ func findM4AMetadataPath(f *os.File, fileSize int64) (m4aMetadataPath, error) {
 		udtaBodyStart := udta.offset + udta.headerSize
 		udtaBodySize := udta.size - udta.headerSize
 		if meta, ok2, _ := findAtomInRange(f, udtaBodyStart, udtaBodySize, "meta", fileSize); ok2 {
-			metaBodyStart := meta.offset + meta.headerSize + 4
-			metaBodySize := meta.size - meta.headerSize - 4
-			if ilst, ok3, _ := findAtomInRange(f, metaBodyStart, metaBodySize, "ilst", fileSize); ok3 {
+			if ilst, ok3 := findIlstInMeta(f, meta, fileSize); ok3 {
 				udtaCopy := udta
 				return m4aMetadataPath{
 					moov: moov,
@@ -1269,9 +1383,7 @@ func findM4AMetadataPath(f *os.File, fileSize int64) (m4aMetadataPath, error) {
 	}
 
 	if meta, ok, _ := findAtomInRange(f, moovBodyStart, moovBodySize, "meta", fileSize); ok {
-		metaBodyStart := meta.offset + meta.headerSize + 4
-		metaBodySize := meta.size - meta.headerSize - 4
-		if ilst, ok2, _ := findAtomInRange(f, metaBodyStart, metaBodySize, "ilst", fileSize); ok2 {
+		if ilst, ok2 := findIlstInMeta(f, meta, fileSize); ok2 {
 			return m4aMetadataPath{
 				moov: moov,
 				meta: meta,
@@ -1406,6 +1518,51 @@ func EditM4AReplayGain(filePath string, fields map[string]string) error {
 		return nil
 	}
 
+	remove := map[string]struct{}{
+		"REPLAYGAIN_TRACK_GAIN": {},
+		"REPLAYGAIN_TRACK_PEAK": {},
+		"REPLAYGAIN_ALBUM_GAIN": {},
+		"REPLAYGAIN_ALBUM_PEAK": {},
+		"ITUNNORM":              {},
+	}
+
+	order := []string{
+		"replaygain_track_gain",
+		"replaygain_track_peak",
+		"replaygain_album_gain",
+		"replaygain_album_peak",
+		"iTunNORM",
+	}
+	tags := make([]m4aFreeformTag, 0, len(order))
+	for _, key := range order {
+		value := strings.TrimSpace(replayGainFields[key])
+		if value == "" {
+			continue
+		}
+		name := key
+		if key != "iTunNORM" {
+			name = strings.ToLower(key)
+		}
+		tags = append(tags, m4aFreeformTag{name: name, value: value})
+	}
+
+	return writeM4AFreeformTags(filePath, remove, tags)
+}
+
+type m4aFreeformTag struct {
+	name  string
+	value string
+}
+
+// writeM4AFreeformTags rewrites the ilst atom in place: it drops every existing
+// freeform ("----") atom whose uppercased name is in `remove`, then appends the
+// supplied tags (empty values are skipped, which effectively clears the field).
+// Atom sizes are fixed up along the ilst -> meta -> udta -> moov chain.
+//
+// FFmpeg's MP4 muxer only writes a fixed set of recognized keys to the ilst, so
+// fields like ISRC and LABEL are silently dropped when written via -metadata.
+// Writing them as iTunes freeform atoms natively is the only way they persist.
+func writeM4AFreeformTags(filePath string, remove map[string]struct{}, tags []m4aFreeformTag) error {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -1419,6 +1576,13 @@ func EditM4AReplayGain(filePath string, fields map[string]string) error {
 
 	path, err := findM4AMetadataPath(f, info.Size())
 	if err != nil {
+		// MOV-style containers (e.g. AC-4 passthrough) store tags as QuickTime
+		// atoms under udta with no iTunes meta>ilst structure. There is nowhere
+		// to write freeform tags, so skip gracefully instead of failing.
+		if strings.Contains(err.Error(), "ilst not found") {
+			GoLog("[Metadata] No iTunes ilst container; skipping freeform tags")
+			return nil
+		}
 		return err
 	}
 
@@ -1430,13 +1594,6 @@ func EditM4AReplayGain(filePath string, fields map[string]string) error {
 	bodyStart := path.ilst.offset + path.ilst.headerSize
 	bodyEnd := path.ilst.offset + path.ilst.size
 	newBody := make([]byte, 0, int(path.ilst.size))
-	targets := map[string]struct{}{
-		"REPLAYGAIN_TRACK_GAIN": {},
-		"REPLAYGAIN_TRACK_PEAK": {},
-		"REPLAYGAIN_ALBUM_GAIN": {},
-		"REPLAYGAIN_ALBUM_PEAK": {},
-		"ITUNNORM":              {},
-	}
 
 	for pos := bodyStart; pos+8 <= bodyEnd; {
 		header, readErr := readAtomHeaderAt(f, pos, info.Size())
@@ -1454,7 +1611,7 @@ func EditM4AReplayGain(filePath string, fields map[string]string) error {
 		if header.typ == "----" {
 			name, _, freeformErr := readM4AFreeformValue(f, header, info.Size())
 			if freeformErr == nil {
-				if _, ok := targets[strings.ToUpper(strings.TrimSpace(name))]; ok {
+				if _, ok := remove[strings.ToUpper(strings.TrimSpace(name))]; ok {
 					keep = false
 				}
 			}
@@ -1466,23 +1623,11 @@ func EditM4AReplayGain(filePath string, fields map[string]string) error {
 		pos += header.size
 	}
 
-	order := []string{
-		"replaygain_track_gain",
-		"replaygain_track_peak",
-		"replaygain_album_gain",
-		"replaygain_album_peak",
-		"iTunNORM",
-	}
-	for _, key := range order {
-		value := strings.TrimSpace(replayGainFields[key])
-		if value == "" {
+	for _, tag := range tags {
+		if strings.TrimSpace(tag.value) == "" {
 			continue
 		}
-		name := key
-		if key != "iTunNORM" {
-			name = strings.ToLower(key)
-		}
-		newBody = append(newBody, buildM4AFreeformAtom(name, value)...)
+		newBody = append(newBody, buildM4AFreeformAtom(tag.name, tag.value)...)
 	}
 
 	newIlst := buildM4AAtom("ilst", newBody)
@@ -1507,6 +1652,32 @@ func EditM4AReplayGain(filePath string, fields map[string]string) error {
 	}
 
 	return os.WriteFile(filePath, updated, 0o644)
+}
+
+// EditM4AFreeformText writes ISRC and label tags into an M4A/MP4 file as iTunes
+// freeform atoms. These keys are not part of FFmpeg's MP4 metadata key set, so
+// they must be written natively for the values to actually persist. An empty
+// value clears the corresponding tag. Other (recognized) tags are left intact.
+func EditM4AFreeformText(filePath string, fields map[string]string) error {
+	_, hasISRC := fields["isrc"]
+	_, hasLabel := fields["label"]
+	if !hasISRC && !hasLabel {
+		return nil
+	}
+
+	remove := map[string]struct{}{}
+	tags := make([]m4aFreeformTag, 0, 2)
+	if hasISRC {
+		remove["ISRC"] = struct{}{}
+		tags = append(tags, m4aFreeformTag{name: "ISRC", value: strings.TrimSpace(fields["isrc"])})
+	}
+	if hasLabel {
+		remove["LABEL"] = struct{}{}
+		remove["ORGANIZATION"] = struct{}{}
+		tags = append(tags, m4aFreeformTag{name: "LABEL", value: strings.TrimSpace(fields["label"])})
+	}
+
+	return writeM4AFreeformTags(filePath, remove, tags)
 }
 
 func extractLyricsFromSidecarLRC(filePath string) (string, error) {

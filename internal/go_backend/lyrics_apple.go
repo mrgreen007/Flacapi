@@ -2,18 +2,25 @@ package gobackend
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
+
+var errAppleMusicUnauthorized = errors.New("apple music catalog search unauthorized")
 
 type AppleMusicClient struct {
 	httpClient *http.Client
 }
+
+const appleMusicCatalogBaseURL = "https://amp-api.music.apple.com/v1/catalog/us"
 
 type appleMusicSearchResult struct {
 	ID         string `json:"id"`
@@ -23,9 +30,33 @@ type appleMusicSearchResult struct {
 	Duration   int    `json:"duration"`
 }
 
+type appleMusicCatalogSearchResponse struct {
+	Results struct {
+		Songs *struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		} `json:"songs"`
+	} `json:"results"`
+	Resources *struct {
+		Songs map[string]struct {
+			Attributes struct {
+				Name             string `json:"name"`
+				ArtistName       string `json:"artistName"`
+				AlbumName        string `json:"albumName"`
+				DurationInMillis int    `json:"durationInMillis"`
+			} `json:"attributes"`
+		} `json:"songs"`
+	} `json:"resources"`
+}
+
 type paxResponse struct {
-	Type    string      `json:"type"`    // "Syllable" or "Line"
-	Content []paxLyrics `json:"content"` // List of lyric lines
+	Type            string      `json:"type"` // "Syllable" or "Line"
+	Content         []paxLyrics `json:"content"`
+	ELRC            string      `json:"elrc"`
+	ELRCMultiPerson string      `json:"elrcMultiPerson"`
+	Plain           string      `json:"plain"`
+	TTMLContent     string      `json:"ttmlContent"`
 }
 
 type paxLyrics struct {
@@ -43,6 +74,11 @@ type paxLyricDetail struct {
 	Timestamp *int   `json:"timestamp"`
 	EndTime   *int   `json:"endtime"`
 }
+
+var (
+	appleMusicTokenMu     sync.Mutex
+	appleMusicCachedToken string
+)
 
 func NewAppleMusicClient() *AppleMusicClient {
 	return &AppleMusicClient{
@@ -100,36 +136,164 @@ func selectBestAppleMusicSearchResult(results []appleMusicSearchResult, trackNam
 	return &results[bestIndex]
 }
 
+func (c *AppleMusicClient) getAppleMusicToken() (string, error) {
+	appleMusicTokenMu.Lock()
+	defer appleMusicTokenMu.Unlock()
+
+	if appleMusicCachedToken != "" {
+		return appleMusicCachedToken, nil
+	}
+
+	req, err := http.NewRequest("GET", "https://beta.music.apple.com", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create apple music page request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch apple music page: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("apple music page returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read apple music page: %w", err)
+	}
+
+	indexPath := regexp.MustCompile(`/assets/index~[^"' <]+\.js`).FindString(string(body))
+	if indexPath == "" {
+		return "", fmt.Errorf("apple music index script not found")
+	}
+
+	jsReq, err := http.NewRequest("GET", "https://beta.music.apple.com"+indexPath, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create apple music script request: %w", err)
+	}
+	jsReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	jsResp, err := c.httpClient.Do(jsReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch apple music script: %w", err)
+	}
+	defer jsResp.Body.Close()
+
+	if jsResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("apple music script returned HTTP %d", jsResp.StatusCode)
+	}
+
+	jsBody, err := io.ReadAll(jsResp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read apple music script: %w", err)
+	}
+
+	token := regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`).FindString(string(jsBody))
+	if token == "" {
+		return "", fmt.Errorf("apple music token not found")
+	}
+
+	appleMusicCachedToken = token
+	return token, nil
+}
+
+func clearAppleMusicToken() {
+	appleMusicTokenMu.Lock()
+	defer appleMusicTokenMu.Unlock()
+	appleMusicCachedToken = ""
+}
+
+func (c *AppleMusicClient) searchSongWithToken(token, query string) ([]appleMusicSearchResult, error) {
+	params := url.Values{}
+	params.Set("term", query)
+	params.Set("types", "songs")
+	params.Set("limit", "25")
+	params.Set("l", "en-US")
+	params.Set("platform", "web")
+	params.Set("format[resources]", "map")
+	params.Set("include[songs]", "artists")
+	params.Set("extend", "artistUrl")
+
+	searchURL := appleMusicCatalogBaseURL + "/search?" + params.Encode()
+	req, err := http.NewRequest("GET", searchURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create apple music catalog request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Origin", "https://music.apple.com")
+	req.Header.Set("Referer", "https://music.apple.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:95.0) Gecko/20100101 Firefox/95.0")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	req.Header.Set("x-apple-renewal", "true")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("apple music catalog search failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errAppleMusicUnauthorized
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("apple music catalog search returned HTTP %d", resp.StatusCode)
+	}
+
+	var searchResp appleMusicCatalogSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return nil, fmt.Errorf("failed to decode apple music catalog response: %w", err)
+	}
+
+	if searchResp.Results.Songs == nil || searchResp.Resources == nil {
+		return nil, nil
+	}
+
+	results := make([]appleMusicSearchResult, 0, len(searchResp.Results.Songs.Data))
+	for _, item := range searchResp.Results.Songs.Data {
+		detail, ok := searchResp.Resources.Songs[item.ID]
+		if !ok {
+			continue
+		}
+		attr := detail.Attributes
+		results = append(results, appleMusicSearchResult{
+			ID:         item.ID,
+			SongName:   attr.Name,
+			ArtistName: attr.ArtistName,
+			AlbumName:  attr.AlbumName,
+			Duration:   attr.DurationInMillis,
+		})
+	}
+
+	return results, nil
+}
+
 func (c *AppleMusicClient) SearchSong(trackName, artistName string, durationSec float64) (string, error) {
 	query := trackName + " " + artistName
 	if strings.TrimSpace(query) == "" {
 		return "", fmt.Errorf("empty search query")
 	}
 
-	encodedQuery := url.QueryEscape(query)
-	searchURL := fmt.Sprintf("https://lyrics.paxsenix.org/apple-music/search?q=%s", encodedQuery)
-
-	req, err := http.NewRequest("GET", searchURL, nil)
+	token, err := c.getAppleMusicToken()
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", err
 	}
 
-	req.Header.Set("User-Agent", appUserAgent())
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
+	searchResp, err := c.searchSongWithToken(token, strings.TrimSpace(query))
+	if errors.Is(err, errAppleMusicUnauthorized) {
+		clearAppleMusicToken()
+		token, tokenErr := c.getAppleMusicToken()
+		if tokenErr != nil {
+			return "", tokenErr
+		}
+		searchResp, err = c.searchSongWithToken(token, strings.TrimSpace(query))
+	}
 	if err != nil {
-		return "", fmt.Errorf("apple music search failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("apple music search returned HTTP %d", resp.StatusCode)
-	}
-
-	var searchResp []appleMusicSearchResult
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return "", fmt.Errorf("failed to decode apple music response: %w", err)
+		return "", err
 	}
 
 	best := selectBestAppleMusicSearchResult(searchResp, trackName, artistName, durationSec)
@@ -174,8 +338,33 @@ func (c *AppleMusicClient) FetchLyricsByID(songID string) (string, error) {
 }
 
 func formatPaxLyricsToLRC(rawJSON string, multiPersonWordByWord bool, preserveWordTiming bool) (string, error) {
+	var stringPayload string
+	if err := json.Unmarshal([]byte(rawJSON), &stringPayload); err == nil {
+		stringPayload = strings.TrimSpace(stringPayload)
+		if stringPayload != "" {
+			return stringPayload, nil
+		}
+	}
+
 	var paxResp paxResponse
-	if err := json.Unmarshal([]byte(rawJSON), &paxResp); err == nil && paxResp.Content != nil {
+	if err := json.Unmarshal([]byte(rawJSON), &paxResp); err == nil &&
+		(paxResp.Content != nil ||
+			strings.TrimSpace(paxResp.ELRCMultiPerson) != "" ||
+			strings.TrimSpace(paxResp.ELRC) != "" ||
+			strings.TrimSpace(paxResp.Plain) != "" ||
+			strings.TrimSpace(paxResp.TTMLContent) != "") {
+		if preserveWordTiming && multiPersonWordByWord && strings.TrimSpace(paxResp.ELRCMultiPerson) != "" {
+			return strings.TrimSpace(paxResp.ELRCMultiPerson), nil
+		}
+		if preserveWordTiming && strings.TrimSpace(paxResp.ELRC) != "" {
+			return strings.TrimSpace(paxResp.ELRC), nil
+		}
+		if strings.TrimSpace(paxResp.Plain) != "" && len(paxResp.Content) == 0 {
+			return strings.TrimSpace(paxResp.Plain), nil
+		}
+		if len(paxResp.Content) == 0 {
+			return "", fmt.Errorf("unsupported apple music lyrics payload")
+		}
 		return formatPaxContent(paxResp.Type, paxResp.Content, multiPersonWordByWord, preserveWordTiming), nil
 	}
 
@@ -270,6 +459,10 @@ func (c *AppleMusicClient) FetchLyrics(
 
 	lrcText, err := formatPaxLyricsToLRC(rawLyrics, multiPersonWordByWord, preserveWordTiming)
 	if err != nil {
+		trimmedRaw := strings.TrimSpace(rawLyrics)
+		if strings.HasPrefix(trimmedRaw, "{") || strings.HasPrefix(trimmedRaw, "[") {
+			return nil, err
+		}
 		lrcText = rawLyrics
 	}
 

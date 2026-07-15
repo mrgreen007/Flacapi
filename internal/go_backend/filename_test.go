@@ -55,6 +55,23 @@ func TestBuildFilenameFromTemplate_InlineNumberFormatting(t *testing.T) {
 	}
 }
 
+func TestBuildFilenameFromTemplate_PlaylistPositionFormatting(t *testing.T) {
+	metadata := map[string]interface{}{
+		"playlist_position": 4,
+		"artist":            "Artist Name",
+		"title":             "Song Name",
+	}
+
+	formatted := buildFilenameFromTemplate(
+		"{playlist_position:02} - {artist} - {title}",
+		metadata,
+	)
+	expected := "04 - Artist Name - Song Name"
+	if formatted != expected {
+		t.Fatalf("expected %q, got %q", expected, formatted)
+	}
+}
+
 func TestBuildFilenameFromTemplate_DateStrftimeFormatting(t *testing.T) {
 	metadata := map[string]interface{}{
 		"artist":       "Artist Name",

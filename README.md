@@ -90,6 +90,7 @@ A quick overview of active endpoints is provided below. For request payload stru
 
 ### 🏥 System
 - **`GET /health`** — Quick server health check. Returns local status and upstream dependency health (checking `api.zarz.moe`).
+- **`GET/POST /api/v1/auth/callback`** — Handshake callback that receives the browser redirect or copy-pasted link (via query parameter `url` or JSON body key `url`) to finalize extension authentication.
 
 ### 📥 Downloads & Progress
 - **`POST /api/v1/download/strategy`** — Search and download audio asynchronously. Returns tracking `itemId` immediately.
